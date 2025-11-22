@@ -1,69 +1,211 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-import { BuildingConfig, BuildingType } from './types';
+import { BuildingConfig, BuildingType, TechNode } from './types';
 
 // Map Settings
-export const GRID_SIZE = 15;
+export const MAP_SIZES = {
+  Small: 12,
+  Medium: 20,
+  Large: 32,
+};
 
 // Game Settings
-export const TICK_RATE_MS = 2000; // Game loop updates every 2 seconds
-export const INITIAL_MONEY = 2000; // Slightly higher starting money for space tech
+export const TICK_RATE_MS = 2000; 
+export const INITIAL_MONEY = 4000; 
 
 export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
   [BuildingType.None]: {
     type: BuildingType.None,
     cost: 0,
-    name: 'Recycle',
-    description: 'Clear module',
-    color: '#ef4444', // Used for UI
+    name: 'Regolith',
+    description: 'Clear area',
+    color: '#ef4444',
     popGen: 0,
     incomeGen: 0,
+    powerGen: 0,
+    scienceGen: 0,
+    width: 1,
+    height: 1,
   },
   [BuildingType.Road]: {
     type: BuildingType.Road,
-    cost: 15,
-    name: 'Corridor',
-    description: 'Connects modules.',
-    color: '#4b5563', // gray-600
+    cost: 25,
+    name: 'Transport Tube',
+    description: 'Pressurized transit.',
+    color: '#475569', 
     popGen: 0,
     incomeGen: 0,
+    powerGen: 0,
+    scienceGen: 0,
+    width: 1,
+    height: 1,
+  },
+  [BuildingType.SolarPanel]: {
+    type: BuildingType.SolarPanel,
+    cost: 150,
+    name: 'Solar Array',
+    description: 'Basic power generation.',
+    color: '#3b82f6',
+    popGen: 0,
+    incomeGen: 0,
+    powerGen: 25,
+    scienceGen: 0,
+    width: 1,
+    height: 1,
   },
   [BuildingType.Residential]: {
     type: BuildingType.Residential,
-    cost: 150,
-    name: 'Habitation',
-    description: '+5 Crew/sol',
-    color: '#e5e7eb', // gray-200 (White/Silver)
-    popGen: 5,
-    incomeGen: 0,
+    cost: 200,
+    name: 'Habitation Stack',
+    description: 'High-density living.',
+    color: '#e2e8f0',
+    popGen: 12,
+    incomeGen: -2,
+    powerGen: -4,
+    scienceGen: 0,
+    width: 1,
+    height: 1,
+  },
+  [BuildingType.ResearchLab]: {
+    type: BuildingType.ResearchLab,
+    cost: 600,
+    name: 'Research Lab',
+    description: 'Generates Science.',
+    color: '#8b5cf6',
+    popGen: 2,
+    incomeGen: -10,
+    powerGen: -12,
+    scienceGen: 8,
+    width: 1,
+    height: 1,
   },
   [BuildingType.Commercial]: {
     type: BuildingType.Commercial,
-    cost: 300,
-    name: 'Comms Hub',
-    description: '+15 Credits/sol',
-    color: '#3b82f6', // blue-500
+    cost: 450,
+    name: 'Data Nexus',
+    description: 'Off-world server farm.',
+    color: '#3b82f6',
     popGen: 0,
-    incomeGen: 15,
+    incomeGen: 25,
+    powerGen: -10,
+    scienceGen: 1,
+    width: 1,
+    height: 1,
+  },
+  [BuildingType.Agriculture]: {
+    type: BuildingType.Agriculture,
+    cost: 350,
+    name: 'Hydroponics Bay',
+    description: 'Vertical farms.',
+    color: '#84cc16',
+    popGen: 4,
+    incomeGen: 10,
+    powerGen: -8,
+    scienceGen: 0,
+    width: 1,
+    height: 1,
   },
   [BuildingType.Industrial]: {
     type: BuildingType.Industrial,
-    cost: 500,
-    name: 'Reactor',
-    description: '+40 Credits/sol',
-    color: '#f59e0b', // amber-500
+    cost: 1200,
+    name: 'He3 Deep Mine',
+    description: 'Extracts fusion fuel.',
+    color: '#f59e0b',
     popGen: 0,
-    incomeGen: 40,
+    incomeGen: 85,
+    powerGen: -35,
+    scienceGen: 0,
+    width: 2,
+    height: 2,
+  },
+  [BuildingType.FusionReactor]: {
+    type: BuildingType.FusionReactor,
+    cost: 2500,
+    name: 'Fusion Reactor',
+    description: 'Massive clean energy.',
+    color: '#f43f5e',
+    popGen: 0,
+    incomeGen: -50,
+    powerGen: 250,
+    scienceGen: 5,
+    width: 2,
+    height: 2,
   },
   [BuildingType.Park]: {
     type: BuildingType.Park,
-    cost: 100,
-    name: 'Bio-Dome',
-    description: 'Oxygen & Sanity.',
-    color: '#10b981', // emerald-500
-    popGen: 1,
-    incomeGen: 0,
+    cost: 800,
+    name: 'Exo-Biome',
+    description: 'Terraformed dome.',
+    color: '#10b981',
+    popGen: 5,
+    incomeGen: 5,
+    powerGen: -15,
+    scienceGen: 2,
+    width: 2,
+    height: 2,
   },
 };
+
+export const TECH_TREE: TechNode[] = [
+  {
+    id: 'tech_basics',
+    name: 'Lunar Basics',
+    description: 'Standard issue colony blueprints.',
+    cost: 0,
+    unlocks: [BuildingType.Road, BuildingType.SolarPanel, BuildingType.Residential],
+    prerequisites: [],
+  },
+  {
+    id: 'tech_research',
+    name: 'Xeno-Research',
+    description: 'Unlocks scientific facilities.',
+    cost: 50,
+    unlocks: [BuildingType.ResearchLab],
+    prerequisites: ['tech_basics'],
+  },
+  {
+    id: 'tech_hydroponics',
+    name: 'Closed-Loop Biology',
+    description: 'Advanced sustainable farming.',
+    cost: 100,
+    unlocks: [BuildingType.Agriculture],
+    prerequisites: ['tech_basics'],
+  },
+  {
+    id: 'tech_commerce',
+    name: 'Off-World Trade',
+    description: 'Commercial hubs and data centers.',
+    cost: 200,
+    unlocks: [BuildingType.Commercial],
+    prerequisites: ['tech_research'],
+  },
+  {
+    id: 'tech_industry',
+    name: 'Heavy Industry',
+    description: 'Helium-3 extraction technology.',
+    cost: 450,
+    unlocks: [BuildingType.Industrial],
+    prerequisites: ['tech_commerce'],
+  },
+  {
+    id: 'tech_terraforming',
+    name: 'Terraforming',
+    description: 'Large scale habitability domes.',
+    cost: 800,
+    unlocks: [BuildingType.Park],
+    prerequisites: ['tech_hydroponics'],
+  },
+  {
+    id: 'tech_fusion',
+    name: 'Nuclear Fusion',
+    description: 'Unlimited power generation.',
+    cost: 1500,
+    unlocks: [BuildingType.FusionReactor],
+    prerequisites: ['tech_industry'],
+  },
+];
+
+export const INITIAL_UNLOCKED_TECHS = ['tech_basics'];

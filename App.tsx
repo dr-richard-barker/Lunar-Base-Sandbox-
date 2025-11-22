@@ -1,27 +1,21 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Grid, TileData, BuildingType, CityStats, AIGoal, NewsItem } from './types';
-import { GRID_SIZE, BUILDINGS, TICK_RATE_MS, INITIAL_MONEY } from './constants';
+import { BUILDINGS, TICK_RATE_MS, INITIAL_MONEY, MAP_SIZES, TECH_TREE, INITIAL_UNLOCKED_TECHS } from './constants';
 import IsoMap from './components/IsoMap';
 import UIOverlay from './components/UIOverlay';
 import StartScreen from './components/StartScreen';
 import { generateCityGoal, generateNewsEvent } from './services/geminiService';
 
-// Initialize empty grid with island shape generation for 3D visual interest
-const createInitialGrid = (): Grid => {
+const createInitialGrid = (size: number): Grid => {
   const grid: Grid = [];
-  const center = GRID_SIZE / 2;
-  // const radius = GRID_SIZE / 2 - 1;
-
-  for (let y = 0; y < GRID_SIZE; y++) {
+  for (let y = 0; y < size; y++) {
     const row: TileData[] = [];
-    for (let x = 0; x < GRID_SIZE; x++) {
-      // Simple circle crop for island look
-      const dist = Math.sqrt((x-center)*(x-center) + (y-center)*(y-center));
-      
+    for (let x = 0; x < size; x++) {
       row.push({ x, y, buildingType: BuildingType.None });
     }
     grid.push(row);
@@ -32,114 +26,236 @@ const createInitialGrid = (): Grid => {
 function App() {
   // --- Game State ---
   const [gameStarted, setGameStarted] = useState(false);
+  const [mapSize, setMapSize] = useState(MAP_SIZES.Medium);
   const [aiEnabled, setAiEnabled] = useState(true);
+  const [autoGrowth, setAutoGrowth] = useState(false);
 
-  const [grid, setGrid] = useState<Grid>(createInitialGrid);
-  const [stats, setStats] = useState<CityStats>({ money: INITIAL_MONEY, population: 0, day: 1 });
+  const [grid, setGrid] = useState<Grid>(() => createInitialGrid(MAP_SIZES.Medium));
+  const [stats, setStats] = useState<CityStats>({ 
+    money: INITIAL_MONEY, 
+    population: 0, 
+    day: 1,
+    science: 0,
+    powerSupply: 0,
+    powerDemand: 0
+  });
   const [selectedTool, setSelectedTool] = useState<BuildingType>(BuildingType.Road);
-  
+  const [unlockedTechs, setUnlockedTechs] = useState<string[]>(INITIAL_UNLOCKED_TECHS);
+  const [unlockedBuildings, setUnlockedBuildings] = useState<BuildingType[]>([]);
+
   // --- AI State ---
   const [currentGoal, setCurrentGoal] = useState<AIGoal | null>(null);
   const [isGeneratingGoal, setIsGeneratingGoal] = useState(false);
   const [newsFeed, setNewsFeed] = useState<NewsItem[]>([]);
   
-  // Refs for accessing state inside intervals without dependencies
+  // Refs
   const gridRef = useRef(grid);
   const statsRef = useRef(stats);
   const goalRef = useRef(currentGoal);
   const aiEnabledRef = useRef(aiEnabled);
+  const autoGrowthRef = useRef(autoGrowth);
+  const unlockedBuildingsRef = useRef(unlockedBuildings);
 
-  // Sync refs
   useEffect(() => { gridRef.current = grid; }, [grid]);
   useEffect(() => { statsRef.current = stats; }, [stats]);
   useEffect(() => { goalRef.current = currentGoal; }, [currentGoal]);
   useEffect(() => { aiEnabledRef.current = aiEnabled; }, [aiEnabled]);
+  useEffect(() => { autoGrowthRef.current = autoGrowth; }, [autoGrowth]);
+  useEffect(() => { unlockedBuildingsRef.current = unlockedBuildings; }, [unlockedBuildings]);
 
-  // --- AI Logic Wrappers ---
+  // --- Tech Logic ---
+  useEffect(() => {
+      const buildings = new Set<BuildingType>();
+      buildings.add(BuildingType.None); // Always available
+      
+      unlockedTechs.forEach(techId => {
+          const tech = TECH_TREE.find(t => t.id === techId);
+          if (tech) {
+              tech.unlocks.forEach(b => buildings.add(b));
+          }
+      });
+      setUnlockedBuildings(Array.from(buildings));
+  }, [unlockedTechs]);
+
+  const handleUnlockTech = (techId: string) => {
+      const tech = TECH_TREE.find(t => t.id === techId);
+      if (!tech) return;
+      
+      if (stats.science >= tech.cost) {
+          setStats(prev => ({ ...prev, science: prev.science - tech.cost }));
+          setUnlockedTechs(prev => [...prev, techId]);
+          addNewsItem({ id: Date.now().toString(), text: `Research Completed: ${tech.name}`, type: 'positive' });
+      } else {
+          addNewsItem({ id: Date.now().toString(), text: `Insufficient Science for ${tech.name}`, type: 'negative' });
+      }
+  };
 
   const addNewsItem = useCallback((item: NewsItem) => {
-    setNewsFeed(prev => [...prev.slice(-12), item]); // Keep last few
+    setNewsFeed(prev => [...prev.slice(-12), item]); 
   }, []);
 
   const fetchNewGoal = useCallback(async () => {
     if (isGeneratingGoal || !aiEnabledRef.current) return;
     setIsGeneratingGoal(true);
-    // Short delay for visual effect
     await new Promise(r => setTimeout(r, 500));
     
     const newGoal = await generateCityGoal(statsRef.current, gridRef.current);
     if (newGoal) {
       setCurrentGoal(newGoal);
     } else {
-      // Retry soon if failed, but only if AI still enabled
       if(aiEnabledRef.current) setTimeout(fetchNewGoal, 5000);
     }
     setIsGeneratingGoal(false);
   }, [isGeneratingGoal]); 
 
   const fetchNews = useCallback(async () => {
-    // chance to fetch news per tick
     if (!aiEnabledRef.current || Math.random() > 0.15) return; 
     const news = await generateNewsEvent(statsRef.current, null);
     if (news) addNewsItem(news);
   }, [addNewsItem]);
 
-
   // --- Initial Setup ---
   useEffect(() => {
     if (!gameStarted) return;
-
-    addNewsItem({ id: Date.now().toString(), text: "Welcome to SkyMetropolis. Terrain generation complete.", type: 'positive' });
-    
-    if (aiEnabled) {
-      // @google/genai-api-key-fix: The API key's availability is a hard requirement and should not be checked in the UI.
-      fetchNewGoal();
-    }
+    addNewsItem({ id: Date.now().toString(), text: "Colony initialization complete. Life support systems active.", type: 'positive' });
+    if (aiEnabled) fetchNewGoal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameStarted]);
 
+
+  // --- Auto Growth Logic ---
+  const attemptAutoBuild = useCallback(() => {
+    const currentStats = statsRef.current;
+    const currentGrid = gridRef.current;
+    const available = unlockedBuildingsRef.current;
+
+    if (currentStats.money < 500) return;
+    if (currentStats.powerSupply < currentStats.powerDemand) {
+         // Prioritize Power
+         if (available.includes(BuildingType.FusionReactor) && currentStats.money > 3000) {
+            // Try building fusion
+         } else if (available.includes(BuildingType.SolarPanel)) {
+             // Try building solar
+             // (Logic simplified below to just generic picking for now)
+         }
+    }
+
+    // Simple logic: Pick a random available building (weighted slightly)
+    let candidates = available.filter(b => b !== BuildingType.None && b !== BuildingType.Road);
+    if (candidates.length === 0) return;
+    
+    const typeToBuild = candidates[Math.floor(Math.random() * candidates.length)];
+    const config = BUILDINGS[typeToBuild];
+
+    if (currentStats.money < config.cost) return;
+
+    // Try to find a valid spot
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const x = Math.floor(Math.random() * mapSize);
+        const y = Math.floor(Math.random() * mapSize);
+        
+        if (x + config.width > mapSize || y + config.height > mapSize) continue;
+
+        let occupied = false;
+        for(let i=0; i<config.width; i++) {
+            for(let j=0; j<config.height; j++) {
+                if (currentGrid[y+j][x+i].buildingType !== BuildingType.None) occupied = true;
+            }
+        }
+        if (occupied) continue;
+
+        // Place it
+        const newGrid = currentGrid.map(row => [...row]);
+        for(let i=0; i<config.width; i++) {
+            for(let j=0; j<config.height; j++) {
+                newGrid[y+j][x+i] = {
+                    ...newGrid[y+j][x+i],
+                    buildingType: typeToBuild,
+                    ownerX: x,
+                    ownerY: y
+                };
+            }
+        }
+        
+        setGrid(newGrid);
+        setStats(prev => ({ ...prev, money: prev.money - config.cost }));
+        break; 
+    }
+  }, [mapSize]);
 
   // --- Game Loop ---
   useEffect(() => {
     if (!gameStarted) return;
 
     const intervalId = setInterval(() => {
-      // 1. Calculate income/pop gen
       let dailyIncome = 0;
       let dailyPopGrowth = 0;
+      let dailyScience = 0;
+      let powerGen = 0;
+      let powerDrain = 0;
       let buildingCounts: Record<string, number> = {};
+
+      const processedRoots = new Set<string>();
 
       gridRef.current.flat().forEach(tile => {
         if (tile.buildingType !== BuildingType.None) {
-          const config = BUILDINGS[tile.buildingType];
-          dailyIncome += config.incomeGen;
-          dailyPopGrowth += config.popGen;
-          buildingCounts[tile.buildingType] = (buildingCounts[tile.buildingType] || 0) + 1;
+          const rootId = tile.ownerX !== undefined ? `${tile.ownerX},${tile.ownerY}` : `${tile.x},${tile.y}`;
+          
+          if (!processedRoots.has(rootId)) {
+            processedRoots.add(rootId);
+            const config = BUILDINGS[tile.buildingType];
+            
+            // Power Calculation
+            if (config.powerGen > 0) powerGen += config.powerGen;
+            else powerDrain += Math.abs(config.powerGen);
+
+            // Base stats (will adjust for low power later)
+            dailyIncome += config.incomeGen;
+            dailyPopGrowth += config.popGen;
+            dailyScience += config.scienceGen;
+            
+            buildingCounts[tile.buildingType] = (buildingCounts[tile.buildingType] || 0) + 1;
+          }
         }
       });
 
-      // Cap population growth by residential count just for some logic
-      const resCount = buildingCounts[BuildingType.Residential] || 0;
-      const maxPop = resCount * 50; // 50 people per house max
+      // Power Penalty Logic
+      const powerRatio = powerDrain > 0 ? Math.min(1, powerGen / powerDrain) : 1;
+      const isLowPower = powerRatio < 1;
 
-      // 2. Update Stats
+      if (isLowPower) {
+          dailyIncome = Math.floor(dailyIncome * powerRatio);
+          dailyPopGrowth = 0; // No growth without full power
+          dailyScience = Math.floor(dailyScience * powerRatio);
+      }
+
+      const resCount = buildingCounts[BuildingType.Residential] || 0;
+      const maxPop = resCount * 50; 
+
+      // Auto Growth
+      if (autoGrowthRef.current) attemptAutoBuild();
+
       setStats(prev => {
         let newPop = prev.population + dailyPopGrowth;
-        if (newPop > maxPop) newPop = maxPop; // limit
-        if (resCount === 0 && prev.population > 0) newPop = Math.max(0, prev.population - 5); // people leave if no homes
+        if (newPop > maxPop) newPop = maxPop; 
+        if (resCount === 0 && prev.population > 0) newPop = Math.max(0, prev.population - 5);
 
         const newStats = {
           money: prev.money + dailyIncome,
           population: newPop,
           day: prev.day + 1,
+          science: prev.science + dailyScience,
+          powerSupply: powerGen,
+          powerDemand: powerDrain
         };
         
-        // 3. Check Goal Completion
+        // Check Goal
         const goal = goalRef.current;
         if (aiEnabledRef.current && goal && !goal.completed) {
           let isMet = false;
           if (goal.targetType === 'money' && newStats.money >= goal.targetValue) isMet = true;
           if (goal.targetType === 'population' && newStats.population >= goal.targetValue) isMet = true;
+          if (goal.targetType === 'science' && newStats.science >= goal.targetValue) isMet = true;
           if (goal.targetType === 'building_count' && goal.buildingType) {
             if ((buildingCounts[goal.buildingType] || 0) >= goal.targetValue) isMet = true;
           }
@@ -151,95 +267,141 @@ function App() {
 
         return newStats;
       });
+      
+      // Alert for power
+      if (isLowPower && Math.random() < 0.1) {
+         addNewsItem({id: Date.now().toString(), text: "WARNING: Power grid insufficient. Systems failing.", type: 'negative'});
+      }
 
-      // 4. Trigger news
       fetchNews();
 
     }, TICK_RATE_MS);
 
     return () => clearInterval(intervalId);
-  }, [fetchNews, gameStarted]);
+  }, [fetchNews, gameStarted, attemptAutoBuild, addNewsItem]);
 
 
   // --- Interaction Logic ---
 
   const handleTileClick = useCallback((x: number, y: number) => {
-    if (!gameStarted) return; // Prevent clicking through start screen
+    if (!gameStarted) return; 
 
     const currentGrid = gridRef.current;
     const currentStats = statsRef.current;
-    const tool = selectedTool; // Capture current tool
+    const tool = selectedTool; 
     
-    if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return;
+    if (x < 0 || x >= mapSize || y < 0 || y >= mapSize) return;
 
-    const currentTile = currentGrid[y][x];
+    const clickedTile = currentGrid[y][x];
     const buildingConfig = BUILDINGS[tool];
 
     // Bulldoze logic
     if (tool === BuildingType.None) {
-      if (currentTile.buildingType !== BuildingType.None) {
-        const demolishCost = 5;
+      if (clickedTile.buildingType !== BuildingType.None) {
+        const demolishCost = 50; 
         if (currentStats.money >= demolishCost) {
             const newGrid = currentGrid.map(row => [...row]);
-            newGrid[y][x] = { ...currentTile, buildingType: BuildingType.None };
+            const rootX = clickedTile.ownerX !== undefined ? clickedTile.ownerX : clickedTile.x;
+            const rootY = clickedTile.ownerY !== undefined ? clickedTile.ownerY : clickedTile.y;
+            const targetType = currentGrid[rootY][rootX].buildingType;
+            const targetConfig = BUILDINGS[targetType];
+            
+            for(let i = 0; i < targetConfig.width; i++) {
+              for(let j = 0; j < targetConfig.height; j++) {
+                 if (rootY+j < mapSize && rootX+i < mapSize) {
+                    newGrid[rootY+j][rootX+i] = { 
+                      x: rootX+i, 
+                      y: rootY+j, 
+                      buildingType: BuildingType.None,
+                    };
+                 }
+              }
+            }
             setGrid(newGrid);
             setStats(prev => ({ ...prev, money: prev.money - demolishCost }));
-            // Sound effect here
         } else {
-            addNewsItem({id: Date.now().toString(), text: "Cannot afford demolition costs.", type: 'negative'});
+            addNewsItem({id: Date.now().toString(), text: "Insufficient credits for demolition crews.", type: 'negative'});
         }
       }
       return;
     }
 
     // Placement Logic
-    if (currentTile.buildingType === BuildingType.None) {
-      if (currentStats.money >= buildingConfig.cost) {
-        // Deduct cost
-        setStats(prev => ({ ...prev, money: prev.money - buildingConfig.cost }));
-        
-        // Place building
-        const newGrid = currentGrid.map(row => [...row]);
-        newGrid[y][x] = { ...currentTile, buildingType: tool };
-        setGrid(newGrid);
-        // Sound effect here
-      } else {
-        // Not enough money feedback
-        addNewsItem({id: Date.now().toString() + Math.random(), text: `Treasury insufficient for ${buildingConfig.name}.`, type: 'negative'});
+    if (!unlockedBuildings.includes(tool)) {
+         addNewsItem({id: Date.now().toString(), text: "Technology not yet researched.", type: 'negative'});
+         return;
+    }
+
+    if (x + buildingConfig.width > mapSize || y + buildingConfig.height > mapSize) {
+       addNewsItem({id: Date.now().toString(), text: "Cannot place here: Outside colony bounds.", type: 'negative'});
+       return;
+    }
+
+    let occupied = false;
+    for(let i = 0; i < buildingConfig.width; i++) {
+      for(let j = 0; j < buildingConfig.height; j++) {
+        if (currentGrid[y+j][x+i].buildingType !== BuildingType.None) {
+          occupied = true;
+          break;
+        }
       }
     }
-  }, [selectedTool, addNewsItem, gameStarted]);
+
+    if (occupied) {
+      addNewsItem({id: Date.now().toString(), text: "Sector occupied. Demolish existing structures first.", type: 'negative'});
+      return;
+    }
+
+    if (currentStats.money >= buildingConfig.cost) {
+      setStats(prev => ({ ...prev, money: prev.money - buildingConfig.cost }));
+      
+      const newGrid = currentGrid.map(row => [...row]);
+      for(let i = 0; i < buildingConfig.width; i++) {
+        for(let j = 0; j < buildingConfig.height; j++) {
+           newGrid[y+j][x+i] = {
+             ...newGrid[y+j][x+i],
+             buildingType: tool,
+             ownerX: x,
+             ownerY: y
+           };
+        }
+      }
+      setGrid(newGrid);
+    } else {
+      addNewsItem({id: Date.now().toString(), text: `Insufficient credits for ${buildingConfig.name}.`, type: 'negative'});
+    }
+  }, [selectedTool, addNewsItem, gameStarted, mapSize, unlockedBuildings]);
 
   const handleClaimReward = () => {
     if (currentGoal && currentGoal.completed) {
       setStats(prev => ({ ...prev, money: prev.money + currentGoal.reward }));
-      addNewsItem({id: Date.now().toString(), text: `Goal achieved! ${currentGoal.reward} deposited to treasury.`, type: 'positive'});
+      addNewsItem({id: Date.now().toString(), text: `Contract fulfilled. ${currentGoal.reward} deposited.`, type: 'positive'});
       setCurrentGoal(null);
       fetchNewGoal();
     }
   };
 
-  const handleStart = (enabled: boolean) => {
+  const handleStart = (enabled: boolean, size: number) => {
     setAiEnabled(enabled);
+    setMapSize(size);
+    setGrid(createInitialGrid(size));
     setGameStarted(true);
   };
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden selection:bg-transparent selection:text-transparent bg-sky-900">
-      {/* 3D Rendering Layer - Always visible now, providing background for start screen */}
+    <div className="relative w-screen h-screen overflow-hidden selection:bg-transparent selection:text-transparent bg-black">
       <IsoMap 
         grid={grid} 
         onTileClick={handleTileClick} 
         hoveredTool={selectedTool}
         population={stats.population}
+        mapSize={mapSize}
       />
       
-      {/* Start Screen Overlay */}
       {!gameStarted && (
         <StartScreen onStart={handleStart} />
       )}
 
-      {/* UI Layer */}
       {gameStarted && (
         <UIOverlay
           stats={stats}
@@ -250,25 +412,13 @@ function App() {
           onClaimReward={handleClaimReward}
           isGeneratingGoal={isGeneratingGoal}
           aiEnabled={aiEnabled}
+          autoGrowth={autoGrowth}
+          onToggleAutoGrowth={() => setAutoGrowth(!autoGrowth)}
+          unlockedTechs={unlockedTechs}
+          onUnlockTech={handleUnlockTech}
+          unlockedBuildings={unlockedBuildings}
         />
       )}
-
-      {/* CSS for animations and utility */}
-      <style>{`
-        @keyframes fade-in { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
-        .animate-fade-in { animation: fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-        
-        .mask-image-b { -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%); mask-image: linear-gradient(to bottom, transparent 0%, black 15%); }
-        
-        /* Vertical text for toolbar label */
-        .writing-mode-vertical { writing-mode: vertical-rl; text-orientation: mixed; }
-        
-        /* Custom scrollbar for news */
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
-        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
-      `}</style>
     </div>
   );
 }

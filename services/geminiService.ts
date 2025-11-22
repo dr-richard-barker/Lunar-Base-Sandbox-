@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -12,13 +13,12 @@ const modelId = 'gemini-2.5-flash';
 
 // --- Goal Generation ---
 
-// @google/genai-schema-fix: The `Schema` type is not exported from @google/genai. Use a const object for the schema.
 const goalSchema = {
   type: Type.OBJECT,
   properties: {
     description: {
       type: Type.STRING,
-      description: "A short, creative objective from the perspective of the Lunar Command AI or Base Commander.",
+      description: "A short, creative objective from the perspective of the Lunar Command AI. Focus on Helium-3 mining operations, bio-regenerative life support stability, and expansion.",
     },
     targetType: {
       type: Type.STRING,
@@ -43,12 +43,13 @@ const goalSchema = {
 };
 
 export const generateCityGoal = async (stats: CityStats, grid: Grid): Promise<AIGoal | null> => {
-  // @google/genai-api-key-fix: The API key must be obtained exclusively from the environment variable `process.env.API_KEY`. Do not add checks for its existence.
-
   // Count buildings
   const counts: Record<string, number> = {};
   grid.flat().forEach(tile => {
-    counts[tile.buildingType] = (counts[tile.buildingType] || 0) + 1;
+    // Only count "root" tiles to avoid double counting multi-tile buildings
+    if (tile.buildingType !== BuildingType.None && (!tile.ownerX || (tile.ownerX === tile.x && tile.ownerY === tile.y))) {
+      counts[tile.buildingType] = (counts[tile.buildingType] || 0) + 1;
+    }
   });
 
   const context = `
@@ -56,27 +57,28 @@ export const generateCityGoal = async (stats: CityStats, grid: Grid): Promise<AI
     Sol: ${stats.day}
     Credits: ${stats.money}
     Colonists: ${stats.population}
-    Modules: ${JSON.stringify(counts)}
-    Module Costs/Stats: ${JSON.stringify(
-      Object.values(BUILDINGS).filter(b => b.type !== BuildingType.None).map(b => ({type: b.type, cost: b.cost, pop: b.popGen, income: b.incomeGen}))
-    )}
+    Modules Built: ${JSON.stringify(counts)}
+    
+    Available Tech:
+    - He3 Deep Mines (Industrial, 2x2)
+    - Bio-Regenerators (Park, 2x2)
+    - Data Nexus (Commercial)
+    - Habitation Stacks (Residential)
   `;
 
-  const prompt = `You are the Central AI for a lunar colony. Based on the current base stats, generate a challenging but achievable short-term mission for the commander to ensure colony survival and growth. Return JSON.`;
+  const prompt = `You are the Central AI (LUNA-9000). Generate a mission. Prioritize industrial expansion (mining) and life-support sustainability. Use "Cyberpunk NASA" terminology (e.g., "regolith slurry", "biomass critical", "fusion yield"). Return JSON.`;
 
   try {
     const response = await ai.models.generateContent({
       model: modelId,
-      // @google/genai-generate-content-fix: For text-only prompts, `contents` should be a single string.
       contents: `${context}\n${prompt}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: goalSchema,
-        temperature: 0.7,
+        temperature: 0.8,
       },
     });
 
-    // @google/genai-response-text-fix: Access the `text` property directly from the response.
     if (response.text) {
       const goalData = JSON.parse(response.text) as Omit<AIGoal, 'completed'>;
       return { ...goalData, completed: false };
@@ -89,35 +91,30 @@ export const generateCityGoal = async (stats: CityStats, grid: Grid): Promise<AI
 
 // --- News Feed Generation ---
 
-// @google/genai-schema-fix: The `Schema` type is not exported from @google/genai. Use a const object for the schema.
 const newsSchema = {
   type: Type.OBJECT,
   properties: {
-    text: { type: Type.STRING, description: "A one-sentence system alert or news headline from the lunar colony." },
+    text: { type: Type.STRING, description: "A one-sentence system alert or news headline." },
     type: { type: Type.STRING, enum: ['positive', 'negative', 'neutral'] },
   },
   required: ['text', 'type'],
 };
 
 export const generateNewsEvent = async (stats: CityStats, recentAction: string | null): Promise<NewsItem | null> => {
-  // @google/genai-api-key-fix: The API key must be obtained exclusively from the environment variable `process.env.API_KEY`. Do not add checks for its existence.
-
   const context = `Base Stats - Crew: ${stats.population}, Credits: ${stats.money}, Sol: ${stats.day}. ${recentAction ? `Recent Action: ${recentAction}` : ''}`;
-  const prompt = "Generate a very short, sci-fi style system alert or news headline for a moon base. Topics: oxygen, meteors, discoveries, rations, morale. Can be dry humour or serious warning.";
+  const prompt = "Generate a short, atmospheric sci-fi news headline for a cyberpunk lunar colony. Topics: He3 extraction yields, algae bloom efficiency, hull pressure variances, corporate transmissions, android maintenance.";
 
   try {
     const response = await ai.models.generateContent({
       model: modelId,
-      // @google/genai-generate-content-fix: For text-only prompts, `contents` should be a single string.
       contents: `${context}\n${prompt}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: newsSchema,
-        temperature: 1.1, // High temp for variety
+        temperature: 1.0, 
       },
     });
 
-    // @google/genai-response-text-fix: Access the `text` property directly from the response.
     if (response.text) {
       const data = JSON.parse(response.text);
       return {
