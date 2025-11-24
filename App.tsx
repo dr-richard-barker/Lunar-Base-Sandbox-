@@ -13,10 +13,29 @@ import { generateCityGoal, generateNewsEvent } from './services/geminiService';
 
 const createInitialGrid = (size: number): Grid => {
   const grid: Grid = [];
+  // Simple noise simulation for terrain
+  const seed = Math.random() * 100;
+  
   for (let y = 0; y < size; y++) {
     const row: TileData[] = [];
     for (let x = 0; x < size; x++) {
-      row.push({ x, y, buildingType: BuildingType.None });
+      // Create craters and plateaus
+      const dist = Math.sqrt(Math.pow(x - size/2, 2) + Math.pow(y - size/2, 2));
+      let height = 0;
+      
+      // Central plateau
+      if (dist < 5) height = 1;
+      
+      // Random crater
+      const craterX = size * 0.2;
+      const craterY = size * 0.7;
+      const craterDist = Math.sqrt(Math.pow(x - craterX, 2) + Math.pow(y - craterY, 2));
+      if (craterDist < 4) height = -1;
+
+      // Quantize height for buildable terraces
+      height = Math.round(height);
+
+      row.push({ x, y, buildingType: BuildingType.None, height });
     }
     grid.push(row);
   }
@@ -123,63 +142,121 @@ function App() {
   }, [gameStarted]);
 
 
-  // --- Auto Growth Logic ---
+  // --- Auto Growth Logic (Smart Needs Based) ---
   const attemptAutoBuild = useCallback(() => {
     const currentStats = statsRef.current;
     const currentGrid = gridRef.current;
     const available = unlockedBuildingsRef.current;
 
-    if (currentStats.money < 500) return;
-    if (currentStats.powerSupply < currentStats.powerDemand) {
-         // Prioritize Power
-         if (available.includes(BuildingType.FusionReactor) && currentStats.money > 3000) {
-            // Try building fusion
-         } else if (available.includes(BuildingType.SolarPanel)) {
-             // Try building solar
-             // (Logic simplified below to just generic picking for now)
-         }
+    // Safety buffer
+    if (currentStats.money < 300) return;
+
+    // 1. Calculate Needs
+    const powerRatio = currentStats.powerSupply > 0 ? currentStats.powerDemand / currentStats.powerSupply : 1.1;
+    
+    // Calculate Housing Capacity
+    let residentialCount = 0;
+    currentGrid.flat().forEach(t => {
+        // Simple check for residential roots
+        if (t.buildingType === BuildingType.Residential && t.ownerX === undefined) residentialCount++;
+        else if (t.buildingType === BuildingType.Residential && t.ownerX === t.x && t.ownerY === t.y) residentialCount++;
+    });
+    const maxPop = residentialCount * 50;
+    const popRatio = maxPop > 0 ? currentStats.population / maxPop : 1.1;
+
+    let targetType: BuildingType | null = null;
+
+    // Priority 1: Power
+    if (powerRatio > 0.85) {
+        if (available.includes(BuildingType.FusionReactor) && currentStats.money > 3500) {
+            targetType = BuildingType.FusionReactor;
+        } else if (available.includes(BuildingType.SolarPanel)) {
+            targetType = BuildingType.SolarPanel;
+        }
+    } 
+    // Priority 2: Housing
+    else if (popRatio > 0.9) {
+        if (available.includes(BuildingType.Residential)) {
+            targetType = BuildingType.Residential;
+        }
+    }
+    // Priority 3: Economy / Jobs / Food
+    else {
+        // Weighted random choice based on availability
+        const ecoOptions = [];
+        if (available.includes(BuildingType.Agriculture)) ecoOptions.push(BuildingType.Agriculture, BuildingType.Agriculture); // Weight higher
+        if (available.includes(BuildingType.Commercial)) ecoOptions.push(BuildingType.Commercial);
+        if (available.includes(BuildingType.Industrial)) ecoOptions.push(BuildingType.Industrial);
+        if (available.includes(BuildingType.Park)) ecoOptions.push(BuildingType.Park);
+        if (available.includes(BuildingType.ResearchLab) && currentStats.money > 2000) ecoOptions.push(BuildingType.ResearchLab);
+
+        if (ecoOptions.length > 0) {
+             targetType = ecoOptions[Math.floor(Math.random() * ecoOptions.length)];
+        }
     }
 
-    // Simple logic: Pick a random available building (weighted slightly)
-    let candidates = available.filter(b => b !== BuildingType.None && b !== BuildingType.Road);
-    if (candidates.length === 0) return;
-    
-    const typeToBuild = candidates[Math.floor(Math.random() * candidates.length)];
-    const config = BUILDINGS[typeToBuild];
-
+    if (!targetType) return;
+    const config = BUILDINGS[targetType];
     if (currentStats.money < config.cost) return;
 
-    // Try to find a valid spot
-    for (let attempt = 0; attempt < 20; attempt++) {
-        const x = Math.floor(Math.random() * mapSize);
-        const y = Math.floor(Math.random() * mapSize);
+    // 2. Find Location (Clustering Logic)
+    // Calculate average position of existing buildings
+    let sumX = 0, sumY = 0, count = 0;
+    currentGrid.flat().forEach(t => {
+        if (t.buildingType !== BuildingType.None) {
+            sumX += t.x;
+            sumY += t.y;
+            count++;
+        }
+    });
+
+    const centerX = count > 0 ? sumX / count : mapSize / 2;
+    const centerY = count > 0 ? sumY / count : mapSize / 2;
+
+    // Try multiple spots near center, spiraling out slightly random
+    for (let attempt = 0; attempt < 15; attempt++) {
+        // Biased random point near center
+        const angle = Math.random() * Math.PI * 2;
+        const radius = Math.random() * (mapSize * 0.4) + (attempt * 0.5); // Increase radius with attempts
         
+        const x = Math.floor(centerX + Math.cos(angle) * radius);
+        const y = Math.floor(centerY + Math.sin(angle) * radius);
+
+        if (x < 0 || y < 0 || x >= mapSize || y >= mapSize) continue;
         if (x + config.width > mapSize || y + config.height > mapSize) continue;
 
+        // Check if spot is valid (empty AND flat)
         let occupied = false;
+        let baseHeight = currentGrid[y][x].height; // Height of top-left corner
+        
         for(let i=0; i<config.width; i++) {
             for(let j=0; j<config.height; j++) {
                 if (currentGrid[y+j][x+i].buildingType !== BuildingType.None) occupied = true;
+                if (currentGrid[y+j][x+i].height !== baseHeight) occupied = true; // Must be flat
             }
         }
         if (occupied) continue;
 
         // Place it
         const newGrid = currentGrid.map(row => [...row]);
+        const variant = Math.floor(Math.random() * 4); // Random variant
+
         for(let i=0; i<config.width; i++) {
             for(let j=0; j<config.height; j++) {
                 newGrid[y+j][x+i] = {
                     ...newGrid[y+j][x+i],
-                    buildingType: typeToBuild,
+                    buildingType: targetType,
                     ownerX: x,
-                    ownerY: y
+                    ownerY: y,
+                    variant: variant
                 };
             }
         }
         
         setGrid(newGrid);
         setStats(prev => ({ ...prev, money: prev.money - config.cost }));
-        break; 
+        // addNewsItem({id: Date.now().toString(), text: `Auto-Gov: Constructed ${config.name}.`, type: 'neutral'}); // Optional spam reduction
+        break; // Stop after successful build
     }
   }, [mapSize]);
 
@@ -232,7 +309,7 @@ function App() {
       const resCount = buildingCounts[BuildingType.Residential] || 0;
       const maxPop = resCount * 50; 
 
-      // Auto Growth
+      // Auto Growth Tick
       if (autoGrowthRef.current) attemptAutoBuild();
 
       setStats(prev => {
@@ -310,9 +387,11 @@ function App() {
               for(let j = 0; j < targetConfig.height; j++) {
                  if (rootY+j < mapSize && rootX+i < mapSize) {
                     newGrid[rootY+j][rootX+i] = { 
-                      x: rootX+i, 
-                      y: rootY+j, 
+                      ...newGrid[rootY+j][rootX+i],
                       buildingType: BuildingType.None,
+                      ownerX: undefined,
+                      ownerY: undefined,
+                      variant: undefined
                     };
                  }
               }
@@ -338,17 +417,17 @@ function App() {
     }
 
     let occupied = false;
+    let baseHeight = currentGrid[y][x].height;
+
     for(let i = 0; i < buildingConfig.width; i++) {
       for(let j = 0; j < buildingConfig.height; j++) {
-        if (currentGrid[y+j][x+i].buildingType !== BuildingType.None) {
-          occupied = true;
-          break;
-        }
+        if (currentGrid[y+j][x+i].buildingType !== BuildingType.None) occupied = true;
+        if (currentGrid[y+j][x+i].height !== baseHeight) occupied = true; // Terrain height check
       }
     }
 
     if (occupied) {
-      addNewsItem({id: Date.now().toString(), text: "Sector occupied. Demolish existing structures first.", type: 'negative'});
+      addNewsItem({id: Date.now().toString(), text: "Sector occupied or uneven terrain.", type: 'negative'});
       return;
     }
 
@@ -356,13 +435,16 @@ function App() {
       setStats(prev => ({ ...prev, money: prev.money - buildingConfig.cost }));
       
       const newGrid = currentGrid.map(row => [...row]);
+      const variant = Math.floor(Math.random() * 4); // Random visual variant
+      
       for(let i = 0; i < buildingConfig.width; i++) {
         for(let j = 0; j < buildingConfig.height; j++) {
            newGrid[y+j][x+i] = {
              ...newGrid[y+j][x+i],
              buildingType: tool,
              ownerX: x,
-             ownerY: y
+             ownerY: y,
+             variant: variant
            };
         }
       }

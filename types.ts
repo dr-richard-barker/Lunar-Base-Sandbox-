@@ -37,6 +37,7 @@ export interface TileData {
   ownerX?: number;
   ownerY?: number;
   variant?: number;
+  height: number;
 }
 
 export type Grid = TileData[][];

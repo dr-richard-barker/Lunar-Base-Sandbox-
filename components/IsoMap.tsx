@@ -5,7 +5,7 @@
 */
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Canvas, useFrame, useThree, ThreeElements, extend } from '@react-three/fiber';
-import { MapControls, Stars, Float, Outlines, OrthographicCamera, useTexture, MeshReflectorMaterial } from '@react-three/drei';
+import { MapControls, Stars, Float, Outlines, OrthographicCamera, useTexture, MeshReflectorMaterial, Instance, Instances } from '@react-three/drei';
 import * as THREE from 'three';
 import { MathUtils } from 'three';
 import { Grid, BuildingType } from '../types';
@@ -21,27 +21,49 @@ declare global {
 }
 
 // --- Terrain Material (Procedural Lunar Surface) ---
-const LunarTerrain = ({ size }: { size: number }) => {
-  const geometry = useMemo(() => new THREE.PlaneGeometry(size, size, 128, 128), [size]);
+const LunarTerrain = ({ size, grid, mapSize }: { size: number, grid: Grid, mapSize: number }) => {
+  const geometry = useMemo(() => new THREE.PlaneGeometry(size, size, mapSize, mapSize), [size, mapSize]);
   
-  // Generate heightmap
   useEffect(() => {
      const pos = geometry.attributes.position;
+     // Map grid height data to vertices
+     // Note: Vertices are mapSize+1 x mapSize+1
+     // We need to smooth or map exactly. For low poly look, we might want to construct custom geometry, 
+     // but modifying plane is easier.
+     
+     // Reset
      for(let i=0; i<pos.count; i++){
          const x = pos.getX(i);
          const y = pos.getY(i);
-         // Simple crater-like noise
+         
+         // Convert world pos to grid coords approximately
+         // Plane is centered at 0, size=size
+         const gx = Math.round((x + size/2) / (size/mapSize) * mapSize / size * (size/mapSize) - 0.5 + mapSize/2);
+         const gy = Math.round((y + size/2) / (size/mapSize) * mapSize / size * (size/mapSize) - 0.5 + mapSize/2);
+
+         let h = 0;
+         // Lookup grid height
+         // Boundary checks
+         const safeX = Math.max(0, Math.min(mapSize-1, Math.floor((x + size/2) / size * mapSize)));
+         const safeY = Math.max(0, Math.min(mapSize-1, Math.floor((y + size/2) / size * mapSize)));
+         
+         if (grid[safeY] && grid[safeY][safeX]) {
+             h = grid[safeY][safeX].height * 0.5; // Scale height for visuals
+         }
+         
+         // Add noise
          let z = Math.sin(x*0.5) * Math.cos(y*0.5) * 0.2;
-         z += Math.random() * 0.05; // Dust
+         z += Math.random() * 0.05; 
          
-         // Large crater attempt
-         const dist = Math.sqrt(x*x + y*y);
-         if (dist < 5) z -= (5 - dist) * 0.2;
-         
-         pos.setZ(i, z);
+         // Apply grid height
+         pos.setZ(i, z + h);
      }
      geometry.computeVertexNormals();
-  }, [geometry]);
+     geometry.attributes.position.needsUpdate = true;
+     geometry.computeBoundingBox();
+     geometry.computeBoundingSphere();
+
+  }, [geometry, grid, size, mapSize]);
 
   return (
     <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, -0.5, 0]} receiveShadow geometry={geometry}>
@@ -49,7 +71,7 @@ const LunarTerrain = ({ size }: { size: number }) => {
         color="#1e293b"
         roughness={0.9}
         metalness={0.1}
-        flatShading={false}
+        flatShading={true}
       />
     </mesh>
   );
@@ -62,9 +84,10 @@ const pipeGeo = new THREE.CylinderGeometry(0.1, 0.1, 1, 8);
 const domeGeo = new THREE.SphereGeometry(1, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2);
 const sphereGeo = new THREE.SphereGeometry(1, 16, 16);
 const torusGeo = new THREE.TorusGeometry(0.6, 0.2, 16, 32);
+const treeTrunkGeo = new THREE.CylinderGeometry(0.05, 0.08, 0.4, 6);
+const treeFoliageGeo = new THREE.ConeGeometry(0.25, 0.5, 6);
 
 // --- Materials ---
-// "NASA Punk": Gold foil, white ceramic, dark metal, neon lights.
 const materials = {
   ceramic: new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.2, metalness: 0.1 }),
   goldFoil: new THREE.MeshStandardMaterial({ color: '#fbbf24', roughness: 0.3, metalness: 1.0, emissive: '#b45309', emissiveIntensity: 0.1 }),
@@ -77,6 +100,8 @@ const materials = {
   neonPurple: new THREE.MeshStandardMaterial({ color: '#a855f7', emissive: '#a855f7', emissiveIntensity: 3, toneMapped: false }),
   neonOrange: new THREE.MeshStandardMaterial({ color: '#f97316', emissive: '#f97316', emissiveIntensity: 4, toneMapped: false }),
   biomass: new THREE.MeshStandardMaterial({ color: '#22c55e', roughness: 0.8, emissive: '#14532d', emissiveIntensity: 0.2 }),
+  wood: new THREE.MeshStandardMaterial({ color: '#4a2c2a', roughness: 1.0 }),
+  leaves: new THREE.MeshStandardMaterial({ color: '#4ade80', roughness: 0.8 }),
 };
 
 const Pipe = ({ start, end }: { start: [number, number, number], end: [number, number, number] }) => {
@@ -90,6 +115,14 @@ const Pipe = ({ start, end }: { start: [number, number, number], end: [number, n
     )
 }
 
+const Tree: React.FC<{ position: [number, number, number], scale?: number }> = ({ position, scale = 1 }) => (
+    <group position={position} scale={scale}>
+        <mesh geometry={treeTrunkGeo} material={materials.wood} position={[0, 0.2, 0]} castShadow />
+        <mesh geometry={treeFoliageGeo} material={materials.leaves} position={[0, 0.5, 0]} castShadow />
+        <mesh geometry={treeFoliageGeo} material={materials.leaves} position={[0, 0.8, 0]} scale={[0.8, 0.8, 0.8]} castShadow />
+    </group>
+);
+
 // --- Procedural Building Components ---
 
 interface ProceduralBuildingProps {
@@ -98,10 +131,11 @@ interface ProceduralBuildingProps {
   y: number;
   width: number;
   height: number;
+  variant: number;
 }
 
-const ProceduralBuilding = React.memo(({ type, x, y, width, height }: ProceduralBuildingProps) => {
-  const seed = x * 13 + y * 7; // Simple deterministic seed
+const ProceduralBuilding = React.memo(({ type, x, y, width, height, variant }: ProceduralBuildingProps) => {
+  const seed = x * 13 + y * 7 + variant; 
   const offsetX = (width - 1) / 2;
   const offsetZ = (height - 1) / 2;
   const groupRef = useRef<THREE.Group>(null);
@@ -125,6 +159,13 @@ const ProceduralBuilding = React.memo(({ type, x, y, width, height }: Procedural
                  dish.rotation.y = Math.sin(state.clock.elapsedTime * 0.5) * 0.5;
                  dish.rotation.x = -0.5 + Math.cos(state.clock.elapsedTime * 0.3) * 0.2;
              }
+        }
+        if (type === BuildingType.Agriculture) {
+            // Pulse grow lights
+            const lights = groupRef.current.getObjectByName('growLights');
+            if (lights) {
+                lights.visible = Math.sin(state.clock.elapsedTime * 5) > 0;
+            }
         }
      }
   });
@@ -173,17 +214,14 @@ const ProceduralBuilding = React.memo(({ type, x, y, width, height }: Procedural
           case BuildingType.ResearchLab:
              return (
                 <group>
-                    {/* Main Building */}
                     <mesh geometry={boxGeo} material={materials.ceramic} scale={[0.8, 0.6, 0.8]} position={[0, 0.3, 0]} castShadow />
                     <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[0.3, 1.0, 0.3]} position={[-0.25, 0.5, -0.25]} />
                     
-                    {/* Radar Dish */}
                     <group name="radar" position={[-0.25, 1.1, -0.25]}>
                         <mesh geometry={sphereGeo} material={materials.ceramic} scale={[0.3, 0.1, 0.3]} />
                         <mesh geometry={pipeGeo} material={materials.neonPurple} scale={[0.2, 0.4, 0.2]} position={[0, 0.1, 0]} />
                     </group>
 
-                    {/* Antenna Array */}
                     <mesh geometry={pipeGeo} material={materials.goldFoil} scale={[0.1, 1, 0.1]} position={[0.3, 0.8, 0.3]} />
                     <mesh geometry={boxGeo} material={materials.neonPurple} scale={[0.05, 0.05, 0.05]} position={[0.3, 1.3, 0.3]} />
                 </group>
@@ -207,21 +245,17 @@ const ProceduralBuilding = React.memo(({ type, x, y, width, height }: Procedural
           case BuildingType.FusionReactor:
              return (
                  <group>
-                     {/* Core Containment */}
                      <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[1.4, 0.5, 1.4]} position={[0, 0.25, 0]} castShadow />
                      
-                     {/* Glowing Torus */}
                      <group name="fusionRing" position={[0, 1.0, 0]} rotation={[Math.PI/2, 0, 0]}>
                          <mesh geometry={torusGeo} material={materials.neonOrange} scale={[1.0, 1.0, 1.0]} />
                          <mesh geometry={torusGeo} material={materials.glass} scale={[1.1, 1.1, 1.1]} opacity={0.2} transparent />
                      </group>
 
-                     {/* Stabilizers */}
                      {[0, 1, 2, 3].map(i => (
                          <mesh key={i} geometry={boxGeo} material={materials.ceramic} scale={[0.3, 1.5, 0.3]} position={[Math.sin(i*Math.PI/2)*1, 0.75, Math.cos(i*Math.PI/2)*1]} rotation={[0, i*Math.PI/2, 0]} />
                      ))}
                      
-                     {/* Central Beam */}
                      <mesh geometry={cylinderGeo} material={materials.neonOrange} scale={[0.2, 2.5, 0.2]} position={[0, 1, 0]} />
                  </group>
              );
@@ -229,34 +263,69 @@ const ProceduralBuilding = React.memo(({ type, x, y, width, height }: Procedural
           case BuildingType.Agriculture:
              return (
                 <group>
-                   <mesh geometry={boxGeo} material={materials.ceramic} scale={[0.9, 0.4, 0.9]} position={[0, 0.2, 0]} castShadow />
-                   <mesh geometry={boxGeo} material={materials.glass} scale={[0.8, 0.6, 0.8]} position={[0, 0.7, 0]} />
-                   {[0, 1, 2].map(i => (
-                       <group key={i} position={[0, 0.5 + i*0.15, 0]}>
-                          <mesh geometry={boxGeo} material={materials.biomass} scale={[0.7, 0.05, 0.7]} />
-                          <mesh geometry={boxGeo} material={materials.neonPurple} scale={[0.7, 0.02, 0.05]} position={[0, 0.08, 0]} />
-                       </group>
-                   ))}
-                   <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[0.1, 0.5, 0.1]} position={[0.3, 1, 0.3]} />
-                   <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[0.1, 0.3, 0.1]} position={[-0.3, 1, -0.3]} />
+                   {/* Base Platform */}
+                   <mesh geometry={boxGeo} material={materials.darkMetal} scale={[0.9, 0.2, 0.9]} position={[0, 0.1, 0]} castShadow />
+                   
+                   {/* Glass Greenhouse */}
+                   <mesh geometry={boxGeo} material={materials.glass} scale={[0.85, 0.8, 0.85]} position={[0, 0.6, 0]} />
+                   
+                   {/* Internal Racks */}
+                   <group position={[0, 0.2, 0]}>
+                       {[0, 1, 2].map(i => (
+                           <group key={i} position={[0, i*0.25, 0]}>
+                              {/* Shelf */}
+                              <mesh geometry={boxGeo} material={materials.darkMetal} scale={[0.7, 0.02, 0.7]} />
+                              {/* Plants */}
+                              <mesh geometry={boxGeo} material={materials.biomass} scale={[0.6, 0.1, 0.6]} position={[0, 0.06, 0]} />
+                              {/* Grow Lights */}
+                              <mesh name="growLights" geometry={boxGeo} material={materials.neonPurple} scale={[0.7, 0.02, 0.05]} position={[0, 0.2, 0]} />
+                              <mesh name="growLights" geometry={boxGeo} material={materials.neonPurple} scale={[0.05, 0.02, 0.7]} position={[0, 0.2, 0]} />
+                           </group>
+                       ))}
+                   </group>
+
+                   {/* External Pipes/Tanks */}
+                   <mesh geometry={cylinderGeo} material={materials.ceramic} scale={[0.15, 0.8, 0.15]} position={[0.4, 0.4, 0.4]} />
+                   <mesh geometry={sphereGeo} material={materials.ceramic} scale={[0.2, 0.2, 0.2]} position={[0.4, 0.9, 0.4]} />
+                   
+                   <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[0.1, 0.6, 0.1]} position={[-0.4, 0.3, -0.4]} />
                 </group>
              );
 
           case BuildingType.Park:
+            // Exo-Biome variants
+            const treeCount = 3 + (variant % 3);
             return (
               <group>
+                 {/* Base */}
                  <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[1.9, 0.2, 1.9]} position={[0, 0.1, 0]} castShadow />
-                 <mesh geometry={domeGeo} material={materials.glass} scale={[1.7, 1.4, 1.7]} position={[0, 0.1, 0]} />
+                 
+                 {/* Large Dome */}
+                 <mesh geometry={domeGeo} material={materials.glass} scale={[1.8, 1.5, 1.8]} position={[0, 0.1, 0]} />
+                 
+                 {/* Structural Ribs */}
                  {[0, 1, 2, 3].map(i => (
-                    <mesh key={i} geometry={boxGeo} material={materials.darkMetal} scale={[0.1, 1.4, 0.1]} position={[Math.sin(i*Math.PI/2)*1.6, 0.6, Math.cos(i*Math.PI/2)*1.6]} rotation={[0,0, Math.sin(i*Math.PI/2) * 0.5]} />
+                    <mesh key={i} geometry={boxGeo} material={materials.darkMetal} scale={[0.05, 1.6, 0.05]} position={[Math.sin(i*Math.PI/2)*1.7, 0.6, Math.cos(i*Math.PI/2)*1.7]} rotation={[0,0, Math.sin(i*Math.PI/2) * 0.4]} />
                  ))}
+
+                 {/* Interior Nature */}
                  <group position={[0, 0.1, 0]}>
-                    <mesh geometry={cylinderGeo} material={materials.biomass} scale={[0.4, 1.2, 0.4]} position={[0, 0.6, 0]} />
-                    <mesh geometry={sphereGeo} material={materials.biomass} scale={[0.9, 0.6, 0.9]} position={[0, 1.2, 0]} />
-                    <mesh geometry={sphereGeo} material={materials.neonGreen} scale={[0.2, 0.2, 0.2]} position={[0.5, 1.0, 0.5]} />
-                    <mesh geometry={sphereGeo} material={materials.neonGreen} scale={[0.2, 0.2, 0.2]} position={[-0.4, 1.3, -0.2]} />
+                    <mesh geometry={cylinderGeo} material={materials.biomass} scale={[1.7, 0.1, 1.7]} position={[0, 0.05, 0]} />
+                    
+                    {/* Trees */}
+                    {Array.from({length: treeCount}).map((_, i) => {
+                        const angle = (i / treeCount) * Math.PI * 2 + seed;
+                        const dist = 0.3 + (seed % 0.5);
+                        return <Tree key={i} position={[Math.cos(angle)*dist, 0, Math.sin(angle)*dist]} scale={0.6 + Math.random()*0.4} />
+                    })}
+                    
+                    {/* Central Water/Feature */}
+                    {variant % 2 === 0 ? (
+                        <mesh geometry={cylinderGeo} material={materials.neonCyan} scale={[0.5, 0.05, 0.5]} position={[0, 0.06, 0]} />
+                    ) : (
+                        <mesh geometry={sphereGeo} material={materials.neonGreen} scale={[0.3, 0.3, 0.3]} position={[0, 0.2, 0]} />
+                    )}
                  </group>
-                 <mesh geometry={cylinderGeo} material={materials.neonCyan} scale={[1.2, 0.05, 1.2]} position={[0, 0.21, 0]} />
               </group>
             );
           
@@ -274,7 +343,7 @@ const Droid: React.FC<{ position: [number, number, number] }> = ({ position }) =
     const group = useRef<THREE.Group>(null);
     useFrame((state) => {
         if(group.current) {
-            group.current.position.y = -0.25 + Math.sin(state.clock.elapsedTime * 10) * 0.02;
+            group.current.position.y = position[1] + 0.25 + Math.sin(state.clock.elapsedTime * 10) * 0.02;
         }
     })
     return (
@@ -295,9 +364,11 @@ const PopulationSystem = React.memo(({ population, grid, mapSize }: { population
        for(let i=0; i<count; i++) {
            const x = Math.floor(Math.random() * mapSize);
            const y = Math.floor(Math.random() * mapSize);
-           if (grid[y][x].buildingType !== BuildingType.None) {
+           if (grid[y] && grid[y][x] && grid[y][x].buildingType !== BuildingType.None) {
+               const tile = grid[y][x];
                const [wx, _, wz] = [x - mapSize/2 + 0.5, 0, y - mapSize/2 + 0.5];
-               arr.push(<Droid key={i} position={[wx + (Math.random()-0.5)*0.5, 0, wz + (Math.random()-0.5)*0.5]} />);
+               const h = tile.height * 0.5;
+               arr.push(<Droid key={i} position={[wx + (Math.random()-0.5)*0.5, h, wz + (Math.random()-0.5)*0.5]} />);
            }
        }
        return arr;
@@ -308,7 +379,7 @@ const PopulationSystem = React.memo(({ population, grid, mapSize }: { population
 
 // --- Main Map ---
 
-const gridToWorld = (x: number, y: number, mapSize: number) => [x - mapSize / 2 + 0.5, 0, y - mapSize / 2 + 0.5] as [number, number, number];
+const gridToWorld = (x: number, y: number, mapSize: number, height: number = 0) => [x - mapSize / 2 + 0.5, height * 0.5, y - mapSize / 2 + 0.5] as [number, number, number];
 
 interface IsoMapProps {
   grid: Grid;
@@ -326,7 +397,12 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
   }, []);
 
   const toolConfig = BUILDINGS[hoveredTool];
-  const previewPos = hoveredTile ? gridToWorld(hoveredTile.x, hoveredTile.y, mapSize) : [0,0,0];
+  let previewHeight = 0;
+  if (hoveredTile && grid[hoveredTile.y] && grid[hoveredTile.y][hoveredTile.x]) {
+      previewHeight = grid[hoveredTile.y][hoveredTile.x].height;
+  }
+  
+  const previewPos = hoveredTile ? gridToWorld(hoveredTile.x, hoveredTile.y, mapSize, previewHeight) : [0,0,0];
   
   const previewOffsetX = (toolConfig.width - 1) / 2;
   const previewOffsetZ = (toolConfig.height - 1) / 2;
@@ -337,9 +413,13 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
     if (hoveredTool !== BuildingType.None) {
         if (hoveredTile.x + toolConfig.width > mapSize || hoveredTile.y + toolConfig.height > mapSize) isValid = false;
         else {
+            // Check occupancy AND height uniformity
+            const baseHeight = grid[hoveredTile.y][hoveredTile.x].height;
             for(let i=0; i<toolConfig.width; i++) {
                 for(let j=0; j<toolConfig.height; j++) {
-                    if (grid[hoveredTile.y + j][hoveredTile.x + i].buildingType !== BuildingType.None) isValid = false;
+                    const tile = grid[hoveredTile.y + j][hoveredTile.x + i];
+                    if (tile.buildingType !== BuildingType.None) isValid = false;
+                    if (tile.height !== baseHeight) isValid = false;
                 }
             }
         }
@@ -371,17 +451,17 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
         <pointLight position={[0, 10, 0]} intensity={0.5} color="#3b82f6" distance={50} decay={2} />
 
         <group>
-          <LunarTerrain size={mapSize + 10} />
+          <LunarTerrain size={mapSize + 10} grid={grid} mapSize={mapSize} />
           
           {grid.map((row, y) =>
             row.map((tile, x) => {
-              const [wx, _, wz] = gridToWorld(x, y, mapSize);
+              const [wx, wy, wz] = gridToWorld(x, y, mapSize, tile.height);
               const isOwner = (tile.ownerX === x && tile.ownerY === y) || (tile.ownerX === undefined && tile.buildingType !== BuildingType.None);
 
               return (
                 <React.Fragment key={`${x}-${y}`}>
                     <mesh 
-                        position={[wx, -0.25, wz]} 
+                        position={[wx, wy - 0.25, wz]} 
                         rotation={[-Math.PI/2, 0, 0]}
                         onPointerEnter={(e) => { e.stopPropagation(); handleHover(x, y); }}
                         onPointerDown={(e) => { e.stopPropagation(); onTileClick(x, y); }}
@@ -392,18 +472,19 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
                     </mesh>
 
                     {isOwner && tile.buildingType !== BuildingType.None && tile.buildingType !== BuildingType.Road && (
-                         <group position={[wx, -0.3, wz]}>
+                         <group position={[wx, wy - 0.3, wz]}>
                              <ProceduralBuilding 
                                 type={tile.buildingType} 
                                 x={x} y={y} 
                                 width={BUILDINGS[tile.buildingType].width} 
-                                height={BUILDINGS[tile.buildingType].height} 
+                                height={BUILDINGS[tile.buildingType].height}
+                                variant={tile.variant || 0}
                              />
                          </group>
                     )}
 
                     {tile.buildingType === BuildingType.Road && (
-                         <group position={[wx, -0.28, wz]}>
+                         <group position={[wx, wy - 0.28, wz]}>
                               <mesh receiveShadow>
                                   <boxGeometry args={[1, 0.05, 1]} />
                                   <meshStandardMaterial color="#334155" roughness={0.8} />
@@ -418,7 +499,7 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
           <PopulationSystem population={population} grid={grid} mapSize={mapSize} />
 
           {hoveredTile && (
-             <group position={[previewPos[0], 0, previewPos[2]]}>
+             <group position={[previewPos[0], previewPos[1], previewPos[2]]}>
                  <mesh 
                     position={[previewOffsetX, -0.2, previewOffsetZ]} 
                     rotation={[-Math.PI/2, 0, 0]}
@@ -432,7 +513,14 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
                     <group position={[0, -0.3, 0]}>
                          <Float speed={2} rotationIntensity={0} floatIntensity={0.2}>
                             <group opacity={0.5}>
-                                <ProceduralBuilding type={hoveredTool} x={hoveredTile.x} y={hoveredTile.y} width={toolConfig.width} height={toolConfig.height} />
+                                <ProceduralBuilding 
+                                    type={hoveredTool} 
+                                    x={hoveredTile.x} 
+                                    y={hoveredTile.y} 
+                                    width={toolConfig.width} 
+                                    height={toolConfig.height}
+                                    variant={0}
+                                />
                             </group>
                          </Float>
                     </group>
