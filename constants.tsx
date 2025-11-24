@@ -14,7 +14,12 @@ export const MAP_SIZES = {
 
 // Game Settings
 export const TICK_RATE_MS = 2000; 
-export const INITIAL_MONEY = 4000; 
+export const INITIAL_MONEY = 50000; // Increased for sandbox mode
+
+// Base consumption/production rates per tick
+export const POP_O2_CONSUMPTION = 0.05; // % per person
+export const POP_CO2_PRODUCTION = 2;    // ppm per person
+export const POP_FOOD_CONSUMPTION = 1;  // unit per person
 
 export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
   [BuildingType.None]: {
@@ -27,6 +32,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: 0,
     powerGen: 0,
     scienceGen: 0,
+    oxygenGen: 0,
+    co2Gen: 0,
+    foodGen: 0,
     width: 1,
     height: 1,
   },
@@ -40,6 +48,25 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: 0,
     powerGen: 0,
     scienceGen: 0,
+    oxygenGen: 0,
+    co2Gen: 0,
+    foodGen: 0,
+    width: 1,
+    height: 1,
+  },
+  [BuildingType.GreenRoad]: {
+    type: BuildingType.GreenRoad,
+    cost: 75,
+    name: 'Canal Transitway',
+    description: 'Algae canals & walkways.',
+    color: '#0ea5e9',
+    popGen: 0,
+    incomeGen: 0,
+    powerGen: 0,
+    scienceGen: 0,
+    oxygenGen: 0.2, // Algae helps
+    co2Gen: -5,     // Scrubs CO2
+    foodGen: 0,
     width: 1,
     height: 1,
   },
@@ -53,6 +80,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: 0,
     powerGen: 25,
     scienceGen: 0,
+    oxygenGen: 0,
+    co2Gen: 0,
+    foodGen: 0,
     width: 1,
     height: 1,
   },
@@ -66,6 +96,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: -2,
     powerGen: -4,
     scienceGen: 0,
+    oxygenGen: 0,
+    co2Gen: 10, // Waste processing
+    foodGen: 0,
     width: 1,
     height: 1,
   },
@@ -79,6 +112,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: -10,
     powerGen: -12,
     scienceGen: 8,
+    oxygenGen: -0.5,
+    co2Gen: 20,
+    foodGen: 0,
     width: 1,
     height: 1,
   },
@@ -92,6 +128,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: 25,
     powerGen: -10,
     scienceGen: 1,
+    oxygenGen: -1,
+    co2Gen: 30,
+    foodGen: 0,
     width: 1,
     height: 1,
   },
@@ -105,6 +144,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: 10,
     powerGen: -8,
     scienceGen: 0,
+    oxygenGen: 2.5,
+    co2Gen: -80,
+    foodGen: 50,
     width: 1,
     height: 1,
   },
@@ -118,6 +160,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: 85,
     powerGen: -35,
     scienceGen: 0,
+    oxygenGen: -3,
+    co2Gen: 150,
+    foodGen: 0,
     width: 2,
     height: 2,
   },
@@ -131,6 +176,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: -50,
     powerGen: 250,
     scienceGen: 5,
+    oxygenGen: 0,
+    co2Gen: 10,
+    foodGen: 0,
     width: 2,
     height: 2,
   },
@@ -144,6 +192,9 @@ export const BUILDINGS: Record<BuildingType, BuildingConfig> = {
     incomeGen: 5,
     powerGen: -15,
     scienceGen: 2,
+    oxygenGen: 5.0,
+    co2Gen: -150,
+    foodGen: 10, // Small amount from permaculture
     width: 2,
     height: 2,
   },
@@ -168,10 +219,10 @@ export const TECH_TREE: TechNode[] = [
   },
   {
     id: 'tech_hydroponics',
-    name: 'Closed-Loop Biology',
-    description: 'Advanced sustainable farming.',
+    name: 'Bio-Regen Life Support',
+    description: 'Farming and air recycling canals.',
     cost: 100,
-    unlocks: [BuildingType.Agriculture],
+    unlocks: [BuildingType.Agriculture, BuildingType.GreenRoad],
     prerequisites: ['tech_basics'],
   },
   {
@@ -208,4 +259,12 @@ export const TECH_TREE: TechNode[] = [
   },
 ];
 
-export const INITIAL_UNLOCKED_TECHS = ['tech_basics'];
+export const INITIAL_UNLOCKED_TECHS = [
+  'tech_basics',
+  'tech_research',
+  'tech_hydroponics',
+  'tech_commerce',
+  'tech_industry',
+  'tech_terraforming',
+  'tech_fusion'
+];

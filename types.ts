@@ -6,6 +6,7 @@
 export enum BuildingType {
   None = 'None',
   Road = 'Road',
+  GreenRoad = 'GreenRoad',
   Residential = 'Residential',
   Commercial = 'Commercial',
   Industrial = 'Industrial',
@@ -26,6 +27,10 @@ export interface BuildingConfig {
   incomeGen: number;
   powerGen: number;   // Positive for production, negative for consumption
   scienceGen: number;
+  // Bio-regenerative stats
+  oxygenGen: number;  // % contribution to atmosphere
+  co2Gen: number;     // ppm produced (negative for scrubbing)
+  foodGen: number;    // Units produced
   width: number;
   height: number;
 }
@@ -49,6 +54,22 @@ export interface CityStats {
   science: number;
   powerSupply: number;
   powerDemand: number;
+  // Life Support Stats
+  oxygen: number;     // Percentage (0-100, Target 21%)
+  co2: number;        // PPM (Target < 800)
+  food: number;       // Stored units
+}
+
+export interface HistoryEntry {
+  day: number;
+  population: number;
+  money: number;
+  science: number;
+  powerSupply: number;
+  powerDemand: number;
+  oxygen: number;
+  co2: number;
+  food: number;
 }
 
 export interface TechNode {

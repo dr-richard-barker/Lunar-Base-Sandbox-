@@ -5,7 +5,7 @@
 */
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Canvas, useFrame, useThree, ThreeElements, extend } from '@react-three/fiber';
-import { MapControls, Stars, Float, Outlines, OrthographicCamera, useTexture, MeshReflectorMaterial, Instance, Instances } from '@react-three/drei';
+import { MapControls, OrbitControls, Stars, Float, Outlines, OrthographicCamera, PerspectiveCamera, useTexture, MeshReflectorMaterial, Instance, Instances, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { MathUtils } from 'three';
 import { Grid, BuildingType } from '../types';
@@ -20,42 +20,91 @@ declare global {
   }
 }
 
+// --- Moon Globe Component ---
+const MoonGlobe = () => {
+    const groupRef = useRef<THREE.Group>(null);
+    useFrame((state) => {
+        if (groupRef.current) {
+            groupRef.current.rotation.y += 0.0005;
+        }
+    });
+
+    return (
+      <group ref={groupRef} rotation={[0.2, 0.5, 0]}>
+         {/* Main Moon Body */}
+         <mesh receiveShadow castShadow>
+           <sphereGeometry args={[20, 64, 64]} />
+           <meshStandardMaterial color="#64748b" roughness={0.9} metalness={0.1} />
+         </mesh>
+         
+         {/* Atmosphere/Glow */}
+         <mesh scale={[1.1, 1.1, 1.1]}>
+            <sphereGeometry args={[20, 32, 32]} />
+            <meshBasicMaterial color="#475569" transparent opacity={0.05} side={THREE.BackSide} />
+         </mesh>
+         
+         {/* Crater Details (Simple procedurals or overlay) */}
+         <mesh position={[10, 5, 16]} rotation={[0, 0.5, 0]}>
+             <ringGeometry args={[1, 1.2, 32]} />
+             <meshStandardMaterial color="#475569" />
+         </mesh>
+         <mesh position={[-5, -10, 16]} rotation={[0.5, 0, 0]}>
+             <ringGeometry args={[2, 2.3, 32]} />
+             <meshStandardMaterial color="#475569" />
+         </mesh>
+  
+         {/* Colony Marker */}
+         <group position={[14, 8, 10]} rotation={[0, 0.5, 0]}>
+             <mesh position={[0, 0, 0]}>
+                 <sphereGeometry args={[0.3]} />
+                 <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={3} />
+             </mesh>
+             <mesh position={[0, 0, 0]}>
+                <ringGeometry args={[0.5, 0.7, 32]} />
+                <meshBasicMaterial color="#06b6d4" side={THREE.DoubleSide} transparent opacity={0.5} />
+             </mesh>
+             {/* Orbital ring */}
+             <mesh rotation={[Math.PI/2, 0, 0]}>
+                 <torusGeometry args={[1.5, 0.02, 16, 64]} />
+                 <meshBasicMaterial color="#06b6d4" transparent opacity={0.3} />
+             </mesh>
+
+             <Html distanceFactor={80} position={[0, 1, 0]}>
+                <div className="bg-black/80 text-cyan-400 border border-cyan-500/50 px-2 py-1 rounded text-[10px] font-mono whitespace-nowrap backdrop-blur-md shadow-[0_0_10px_rgba(6,182,212,0.3)]">
+                   SECTOR ALPHA (ACTIVE)
+                </div>
+             </Html>
+         </group>
+      </group>
+    )
+  }
+
 // --- Terrain Material (Procedural Lunar Surface) ---
 const LunarTerrain = ({ size, grid, mapSize }: { size: number, grid: Grid, mapSize: number }) => {
   const geometry = useMemo(() => new THREE.PlaneGeometry(size, size, mapSize, mapSize), [size, mapSize]);
   
   useEffect(() => {
      const pos = geometry.attributes.position;
-     // Map grid height data to vertices
-     // Note: Vertices are mapSize+1 x mapSize+1
-     // We need to smooth or map exactly. For low poly look, we might want to construct custom geometry, 
-     // but modifying plane is easier.
      
      // Reset
      for(let i=0; i<pos.count; i++){
          const x = pos.getX(i);
          const y = pos.getY(i);
          
-         // Convert world pos to grid coords approximately
-         // Plane is centered at 0, size=size
          const gx = Math.round((x + size/2) / (size/mapSize) * mapSize / size * (size/mapSize) - 0.5 + mapSize/2);
          const gy = Math.round((y + size/2) / (size/mapSize) * mapSize / size * (size/mapSize) - 0.5 + mapSize/2);
 
          let h = 0;
-         // Lookup grid height
-         // Boundary checks
          const safeX = Math.max(0, Math.min(mapSize-1, Math.floor((x + size/2) / size * mapSize)));
          const safeY = Math.max(0, Math.min(mapSize-1, Math.floor((y + size/2) / size * mapSize)));
          
          if (grid[safeY] && grid[safeY][safeX]) {
-             h = grid[safeY][safeX].height * 0.5; // Scale height for visuals
+             h = grid[safeY][safeX].height * 0.5; 
          }
          
-         // Add noise
          let z = Math.sin(x*0.5) * Math.cos(y*0.5) * 0.2;
          z += Math.random() * 0.05; 
          
-         // Apply grid height
          pos.setZ(i, z + h);
      }
      geometry.computeVertexNormals();
@@ -102,6 +151,7 @@ const materials = {
   biomass: new THREE.MeshStandardMaterial({ color: '#22c55e', roughness: 0.8, emissive: '#14532d', emissiveIntensity: 0.2 }),
   wood: new THREE.MeshStandardMaterial({ color: '#4a2c2a', roughness: 1.0 }),
   leaves: new THREE.MeshStandardMaterial({ color: '#4ade80', roughness: 0.8 }),
+  water: new THREE.MeshStandardMaterial({ color: '#0ea5e9', roughness: 0.1, metalness: 0.8, transparent: true, opacity: 0.8 }),
 };
 
 const Pipe = ({ start, end }: { start: [number, number, number], end: [number, number, number] }) => {
@@ -161,7 +211,6 @@ const ProceduralBuilding = React.memo(({ type, x, y, width, height, variant }: P
              }
         }
         if (type === BuildingType.Agriculture) {
-            // Pulse grow lights
             const lights = groupRef.current.getObjectByName('growLights');
             if (lights) {
                 lights.visible = Math.sin(state.clock.elapsedTime * 5) > 0;
@@ -174,6 +223,38 @@ const ProceduralBuilding = React.memo(({ type, x, y, width, height, variant }: P
     <group position={[offsetX, 0, offsetZ]} ref={groupRef}>
       {(() => {
         switch (type) {
+          case BuildingType.GreenRoad:
+            return (
+                <group>
+                    <mesh receiveShadow position={[0, 0.02, 0]}>
+                        <boxGeometry args={[1, 0.05, 0.4]} />
+                        <meshStandardMaterial color="#475569" roughness={0.8} />
+                    </mesh>
+                    <mesh position={[0, 0.01, 0.3]}>
+                         <boxGeometry args={[1, 0.02, 0.2]} />
+                         <primitive object={materials.water} />
+                    </mesh>
+                    <mesh position={[0, 0.01, -0.3]}>
+                         <boxGeometry args={[1, 0.02, 0.2]} />
+                         <primitive object={materials.water} />
+                    </mesh>
+                    <mesh position={[0, 0.03, 0.2]}>
+                         <boxGeometry args={[1, 0.06, 0.05]} />
+                         <meshStandardMaterial color="#94a3b8" />
+                    </mesh>
+                    <mesh position={[0, 0.03, -0.2]}>
+                         <boxGeometry args={[1, 0.06, 0.05]} />
+                         <meshStandardMaterial color="#94a3b8" />
+                    </mesh>
+                    <Tree position={[0.3, 0, 0.4]} scale={0.5} />
+                    <Tree position={[-0.3, 0, -0.4]} scale={0.6} />
+                    <mesh position={[0, 0.2, 0]} rotation={[Math.PI/2, 0, 0]}>
+                        <cylinderGeometry args={[0.3, 0.3, 1, 8, 1, true, 0, Math.PI]} />
+                        <primitive object={materials.glass} />
+                    </mesh>
+                </group>
+            );
+
           case BuildingType.SolarPanel:
             return (
                 <group>
@@ -263,63 +344,44 @@ const ProceduralBuilding = React.memo(({ type, x, y, width, height, variant }: P
           case BuildingType.Agriculture:
              return (
                 <group>
-                   {/* Base Platform */}
                    <mesh geometry={boxGeo} material={materials.darkMetal} scale={[0.9, 0.2, 0.9]} position={[0, 0.1, 0]} castShadow />
-                   
-                   {/* Glass Greenhouse */}
                    <mesh geometry={boxGeo} material={materials.glass} scale={[0.85, 0.8, 0.85]} position={[0, 0.6, 0]} />
                    
-                   {/* Internal Racks */}
                    <group position={[0, 0.2, 0]}>
                        {[0, 1, 2].map(i => (
                            <group key={i} position={[0, i*0.25, 0]}>
-                              {/* Shelf */}
                               <mesh geometry={boxGeo} material={materials.darkMetal} scale={[0.7, 0.02, 0.7]} />
-                              {/* Plants */}
                               <mesh geometry={boxGeo} material={materials.biomass} scale={[0.6, 0.1, 0.6]} position={[0, 0.06, 0]} />
-                              {/* Grow Lights */}
                               <mesh name="growLights" geometry={boxGeo} material={materials.neonPurple} scale={[0.7, 0.02, 0.05]} position={[0, 0.2, 0]} />
                               <mesh name="growLights" geometry={boxGeo} material={materials.neonPurple} scale={[0.05, 0.02, 0.7]} position={[0, 0.2, 0]} />
                            </group>
                        ))}
                    </group>
 
-                   {/* External Pipes/Tanks */}
                    <mesh geometry={cylinderGeo} material={materials.ceramic} scale={[0.15, 0.8, 0.15]} position={[0.4, 0.4, 0.4]} />
                    <mesh geometry={sphereGeo} material={materials.ceramic} scale={[0.2, 0.2, 0.2]} position={[0.4, 0.9, 0.4]} />
-                   
                    <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[0.1, 0.6, 0.1]} position={[-0.4, 0.3, -0.4]} />
                 </group>
              );
 
           case BuildingType.Park:
-            // Exo-Biome variants
             const treeCount = 3 + (variant % 3);
             return (
               <group>
-                 {/* Base */}
                  <mesh geometry={cylinderGeo} material={materials.darkMetal} scale={[1.9, 0.2, 1.9]} position={[0, 0.1, 0]} castShadow />
-                 
-                 {/* Large Dome */}
                  <mesh geometry={domeGeo} material={materials.glass} scale={[1.8, 1.5, 1.8]} position={[0, 0.1, 0]} />
                  
-                 {/* Structural Ribs */}
                  {[0, 1, 2, 3].map(i => (
                     <mesh key={i} geometry={boxGeo} material={materials.darkMetal} scale={[0.05, 1.6, 0.05]} position={[Math.sin(i*Math.PI/2)*1.7, 0.6, Math.cos(i*Math.PI/2)*1.7]} rotation={[0,0, Math.sin(i*Math.PI/2) * 0.4]} />
                  ))}
 
-                 {/* Interior Nature */}
                  <group position={[0, 0.1, 0]}>
                     <mesh geometry={cylinderGeo} material={materials.biomass} scale={[1.7, 0.1, 1.7]} position={[0, 0.05, 0]} />
-                    
-                    {/* Trees */}
                     {Array.from({length: treeCount}).map((_, i) => {
                         const angle = (i / treeCount) * Math.PI * 2 + seed;
                         const dist = 0.3 + (seed % 0.5);
                         return <Tree key={i} position={[Math.cos(angle)*dist, 0, Math.sin(angle)*dist]} scale={0.6 + Math.random()*0.4} />
                     })}
-                    
-                    {/* Central Water/Feature */}
                     {variant % 2 === 0 ? (
                         <mesh geometry={cylinderGeo} material={materials.neonCyan} scale={[0.5, 0.05, 0.5]} position={[0, 0.06, 0]} />
                     ) : (
@@ -387,9 +449,10 @@ interface IsoMapProps {
   hoveredTool: BuildingType;
   population: number;
   mapSize: number;
+  viewMode: 'standard' | 'orbital' | 'moon';
 }
 
-const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, population, mapSize }) => {
+const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, population, mapSize, viewMode }) => {
   const [hoveredTile, setHoveredTile] = useState<{x: number, y: number} | null>(null);
 
   const handleHover = useCallback((x: number, y: number) => {
@@ -403,7 +466,6 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
   }
   
   const previewPos = hoveredTile ? gridToWorld(hoveredTile.x, hoveredTile.y, mapSize, previewHeight) : [0,0,0];
-  
   const previewOffsetX = (toolConfig.width - 1) / 2;
   const previewOffsetZ = (toolConfig.height - 1) / 2;
 
@@ -413,7 +475,6 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
     if (hoveredTool !== BuildingType.None) {
         if (hoveredTile.x + toolConfig.width > mapSize || hoveredTile.y + toolConfig.height > mapSize) isValid = false;
         else {
-            // Check occupancy AND height uniformity
             const baseHeight = grid[hoveredTile.y][hoveredTile.x].height;
             for(let i=0; i<toolConfig.width; i++) {
                 for(let j=0; j<toolConfig.height; j++) {
@@ -426,108 +487,146 @@ const IsoMap: React.FC<IsoMapProps> = ({ grid, onTileClick, hoveredTool, populat
     }
   }
 
+  const isGlobal = viewMode === 'moon';
+  const isOrbital = viewMode === 'orbital';
+
   return (
     <div className="absolute inset-0 bg-black touch-none">
       <Canvas shadows dpr={[1, 1.5]} gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.2 }}>
-        <OrthographicCamera makeDefault zoom={mapSize === 32 ? 25 : 35} position={[30, 30, 30]} near={-100} far={200} />
-        <MapControls minZoom={10} maxZoom={100} maxPolarAngle={Math.PI / 2.1} target={[0,-1,0]} />
+        
+        {isGlobal ? (
+             <>
+                 <PerspectiveCamera makeDefault position={[0, 0, 80]} fov={45} />
+                 <OrbitControls enablePan={false} enableZoom={true} minDistance={40} maxDistance={150} autoRotate autoRotateSpeed={0.5} />
+                 <ambientLight intensity={0.2} color="#475569" />
+                 <directionalLight position={[100, 50, 50]} intensity={2} color="#f8fafc" />
+                 <MoonGlobe />
+                 <Stars radius={200} depth={50} count={10000} factor={4} saturation={0} fade speed={0.1} />
+             </>
+        ) : (
+            <>
+                <OrthographicCamera 
+                    makeDefault 
+                    position={isOrbital ? [0, 50, 0] : [30, 30, 30]} 
+                    zoom={isOrbital ? (mapSize === 32 ? 15 : 20) : (mapSize === 32 ? 25 : 35)} 
+                    near={-100} 
+                    far={200} 
+                />
+                <MapControls 
+                    minZoom={10} 
+                    maxZoom={100} 
+                    maxPolarAngle={isOrbital ? 0 : Math.PI / 2.1} 
+                    enableRotate={!isOrbital}
+                    target={[0, isOrbital ? 0 : -1, 0]}
+                />
 
-        <color attach="background" args={['#050505']} />
-        <Stars radius={150} depth={50} count={8000} factor={4} saturation={0} fade speed={0.1} />
-        <fog attach="fog" args={['#050505', 40, 100]} />
+                <color attach="background" args={['#050505']} />
+                <Stars radius={150} depth={50} count={8000} factor={4} saturation={0} fade speed={0.1} />
+                <fog attach="fog" args={['#050505', 40, 100]} />
 
-        <ambientLight intensity={0.1} color="#475569" />
-        <directionalLight
-          castShadow
-          position={[50, 80, 20]}
-          intensity={3}
-          color="#e2e8f0"
-          shadow-mapSize={[4096, 4096]}
-          shadow-bias={-0.0001}
-        >
-          <orthographicCamera attach="shadow-camera" args={[-50, 50, 50, -50]} />
-        </directionalLight>
+                <ambientLight intensity={0.1} color="#475569" />
+                <directionalLight
+                    castShadow
+                    position={[50, 80, 20]}
+                    intensity={3}
+                    color="#e2e8f0"
+                    shadow-mapSize={[4096, 4096]}
+                    shadow-bias={-0.0001}
+                >
+                    <orthographicCamera attach="shadow-camera" args={[-50, 50, 50, -50]} />
+                </directionalLight>
 
-        <pointLight position={[0, 10, 0]} intensity={0.5} color="#3b82f6" distance={50} decay={2} />
+                <pointLight position={[0, 10, 0]} intensity={0.5} color="#3b82f6" distance={50} decay={2} />
 
-        <group>
-          <LunarTerrain size={mapSize + 10} grid={grid} mapSize={mapSize} />
-          
-          {grid.map((row, y) =>
-            row.map((tile, x) => {
-              const [wx, wy, wz] = gridToWorld(x, y, mapSize, tile.height);
-              const isOwner = (tile.ownerX === x && tile.ownerY === y) || (tile.ownerX === undefined && tile.buildingType !== BuildingType.None);
+                <group>
+                    <LunarTerrain size={mapSize + 10} grid={grid} mapSize={mapSize} />
+                    
+                    {grid.map((row, y) =>
+                        row.map((tile, x) => {
+                        const [wx, wy, wz] = gridToWorld(x, y, mapSize, tile.height);
+                        const isOwner = (tile.ownerX === x && tile.ownerY === y) || (tile.ownerX === undefined && tile.buildingType !== BuildingType.None);
 
-              return (
-                <React.Fragment key={`${x}-${y}`}>
-                    <mesh 
-                        position={[wx, wy - 0.25, wz]} 
-                        rotation={[-Math.PI/2, 0, 0]}
-                        onPointerEnter={(e) => { e.stopPropagation(); handleHover(x, y); }}
-                        onPointerDown={(e) => { e.stopPropagation(); onTileClick(x, y); }}
-                    >
-                        <planeGeometry args={[1, 1]} />
-                        <meshBasicMaterial transparent opacity={0} />
-                        <Outlines thickness={0.01} color="#334155" />
-                    </mesh>
+                        return (
+                            <React.Fragment key={`${x}-${y}`}>
+                                <mesh 
+                                    position={[wx, wy - 0.25, wz]} 
+                                    rotation={[-Math.PI/2, 0, 0]}
+                                    onPointerEnter={(e) => { e.stopPropagation(); handleHover(x, y); }}
+                                    onPointerDown={(e) => { e.stopPropagation(); onTileClick(x, y); }}
+                                >
+                                    <planeGeometry args={[1, 1]} />
+                                    <meshBasicMaterial transparent opacity={0} />
+                                    <Outlines thickness={0.01} color="#334155" />
+                                </mesh>
 
-                    {isOwner && tile.buildingType !== BuildingType.None && tile.buildingType !== BuildingType.Road && (
-                         <group position={[wx, wy - 0.3, wz]}>
-                             <ProceduralBuilding 
-                                type={tile.buildingType} 
-                                x={x} y={y} 
-                                width={BUILDINGS[tile.buildingType].width} 
-                                height={BUILDINGS[tile.buildingType].height}
-                                variant={tile.variant || 0}
-                             />
-                         </group>
+                                {isOwner && tile.buildingType !== BuildingType.None && tile.buildingType !== BuildingType.Road && tile.buildingType !== BuildingType.GreenRoad && (
+                                    <group position={[wx, wy - 0.3, wz]}>
+                                        <ProceduralBuilding 
+                                            type={tile.buildingType} 
+                                            x={x} y={y} 
+                                            width={BUILDINGS[tile.buildingType].width} 
+                                            height={BUILDINGS[tile.buildingType].height}
+                                            variant={tile.variant || 0}
+                                        />
+                                    </group>
+                                )}
+
+                                {(tile.buildingType === BuildingType.Road || tile.buildingType === BuildingType.GreenRoad) && (
+                                    <group position={[wx, wy - 0.28, wz]}>
+                                        {tile.buildingType === BuildingType.Road ? (
+                                            <mesh receiveShadow>
+                                                <boxGeometry args={[1, 0.05, 1]} />
+                                                <meshStandardMaterial color="#334155" roughness={0.8} />
+                                            </mesh>
+                                        ) : (
+                                            <group>
+                                                <ProceduralBuilding 
+                                                    type={BuildingType.GreenRoad}
+                                                    x={x} y={y} width={1} height={1} variant={0} 
+                                                />
+                                            </group>
+                                        )}
+                                    </group>
+                                )}
+                            </React.Fragment>
+                        )
+                        })
                     )}
+                        
+                    <PopulationSystem population={population} grid={grid} mapSize={mapSize} />
 
-                    {tile.buildingType === BuildingType.Road && (
-                         <group position={[wx, wy - 0.28, wz]}>
-                              <mesh receiveShadow>
-                                  <boxGeometry args={[1, 0.05, 1]} />
-                                  <meshStandardMaterial color="#334155" roughness={0.8} />
-                              </mesh>
-                         </group>
+                    {hoveredTile && !isOrbital && (
+                        <group position={[previewPos[0], previewPos[1], previewPos[2]]}>
+                            <mesh 
+                                position={[previewOffsetX, -0.2, previewOffsetZ]} 
+                                rotation={[-Math.PI/2, 0, 0]}
+                            >
+                                <planeGeometry args={[toolConfig.width, toolConfig.height]} />
+                                <meshBasicMaterial color={isValid ? "#3b82f6" : "#ef4444"} transparent opacity={0.3} />
+                                <Outlines thickness={0.05} color={isValid ? "#60a5fa" : "#f87171"} />
+                            </mesh>
+
+                            {hoveredTool !== BuildingType.None && isValid && (
+                                <group position={[0, -0.3, 0]}>
+                                    <Float speed={2} rotationIntensity={0} floatIntensity={0.2}>
+                                        <group opacity={0.5}>
+                                            <ProceduralBuilding 
+                                                type={hoveredTool} 
+                                                x={hoveredTile.x} 
+                                                y={hoveredTile.y} 
+                                                width={toolConfig.width} 
+                                                height={toolConfig.height}
+                                                variant={0}
+                                            />
+                                        </group>
+                                    </Float>
+                                </group>
+                            )}
+                        </group>
                     )}
-                </React.Fragment>
-              )
-            })
-          )}
-            
-          <PopulationSystem population={population} grid={grid} mapSize={mapSize} />
-
-          {hoveredTile && (
-             <group position={[previewPos[0], previewPos[1], previewPos[2]]}>
-                 <mesh 
-                    position={[previewOffsetX, -0.2, previewOffsetZ]} 
-                    rotation={[-Math.PI/2, 0, 0]}
-                 >
-                     <planeGeometry args={[toolConfig.width, toolConfig.height]} />
-                     <meshBasicMaterial color={isValid ? "#3b82f6" : "#ef4444"} transparent opacity={0.3} />
-                     <Outlines thickness={0.05} color={isValid ? "#60a5fa" : "#f87171"} />
-                 </mesh>
-
-                 {hoveredTool !== BuildingType.None && isValid && (
-                    <group position={[0, -0.3, 0]}>
-                         <Float speed={2} rotationIntensity={0} floatIntensity={0.2}>
-                            <group opacity={0.5}>
-                                <ProceduralBuilding 
-                                    type={hoveredTool} 
-                                    x={hoveredTile.x} 
-                                    y={hoveredTile.y} 
-                                    width={toolConfig.width} 
-                                    height={toolConfig.height}
-                                    variant={0}
-                                />
-                            </group>
-                         </Float>
-                    </group>
-                 )}
-             </group>
-          )}
-        </group>
+                </group>
+            </>
+        )}
       </Canvas>
     </div>
   );

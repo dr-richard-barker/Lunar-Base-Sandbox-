@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Grid, TileData, BuildingType, CityStats, AIGoal, NewsItem } from './types';
-import { BUILDINGS, TICK_RATE_MS, INITIAL_MONEY, MAP_SIZES, TECH_TREE, INITIAL_UNLOCKED_TECHS } from './constants';
+import { Grid, TileData, BuildingType, CityStats, AIGoal, NewsItem, HistoryEntry } from './types';
+import { BUILDINGS, TICK_RATE_MS, INITIAL_MONEY, MAP_SIZES, TECH_TREE, INITIAL_UNLOCKED_TECHS, POP_CO2_PRODUCTION, POP_O2_CONSUMPTION, POP_FOOD_CONSUMPTION } from './constants';
 import IsoMap from './components/IsoMap';
 import UIOverlay from './components/UIOverlay';
 import StartScreen from './components/StartScreen';
@@ -48,6 +48,7 @@ function App() {
   const [mapSize, setMapSize] = useState(MAP_SIZES.Medium);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [autoGrowth, setAutoGrowth] = useState(false);
+  const [viewMode, setViewMode] = useState<'standard' | 'orbital' | 'moon'>('standard');
 
   const [grid, setGrid] = useState<Grid>(() => createInitialGrid(MAP_SIZES.Medium));
   const [stats, setStats] = useState<CityStats>({ 
@@ -56,8 +57,13 @@ function App() {
     day: 1,
     science: 0,
     powerSupply: 0,
-    powerDemand: 0
+    powerDemand: 0,
+    oxygen: 100,
+    co2: 400,
+    food: 100
   });
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+
   const [selectedTool, setSelectedTool] = useState<BuildingType>(BuildingType.Road);
   const [unlockedTechs, setUnlockedTechs] = useState<string[]>(INITIAL_UNLOCKED_TECHS);
   const [unlockedBuildings, setUnlockedBuildings] = useState<BuildingType[]>([]);
@@ -142,7 +148,7 @@ function App() {
   }, [gameStarted]);
 
 
-  // --- Auto Growth Logic (Smart Needs Based) ---
+  // --- Auto Growth Logic (Smart Needs Based & Organic Clustering) ---
   const attemptAutoBuild = useCallback(() => {
     const currentStats = statsRef.current;
     const currentGrid = gridRef.current;
@@ -153,11 +159,12 @@ function App() {
 
     // 1. Calculate Needs
     const powerRatio = currentStats.powerSupply > 0 ? currentStats.powerDemand / currentStats.powerSupply : 1.1;
+    const foodStock = currentStats.food;
+    const oxygen = currentStats.oxygen;
     
     // Calculate Housing Capacity
     let residentialCount = 0;
     currentGrid.flat().forEach(t => {
-        // Simple check for residential roots
         if (t.buildingType === BuildingType.Residential && t.ownerX === undefined) residentialCount++;
         else if (t.buildingType === BuildingType.Residential && t.ownerX === t.x && t.ownerY === t.y) residentialCount++;
     });
@@ -166,29 +173,35 @@ function App() {
 
     let targetType: BuildingType | null = null;
 
-    // Priority 1: Power
-    if (powerRatio > 0.85) {
+    // Priority 1: Life Support Critical
+    if (oxygen < 80 || foodStock < currentStats.population * 2) {
+         if (available.includes(BuildingType.Agriculture)) targetType = BuildingType.Agriculture;
+         else if (available.includes(BuildingType.Park)) targetType = BuildingType.Park;
+    }
+    // Priority 2: Power
+    else if (powerRatio > 0.85) {
         if (available.includes(BuildingType.FusionReactor) && currentStats.money > 3500) {
             targetType = BuildingType.FusionReactor;
         } else if (available.includes(BuildingType.SolarPanel)) {
             targetType = BuildingType.SolarPanel;
         }
     } 
-    // Priority 2: Housing
+    // Priority 3: Housing
     else if (popRatio > 0.9) {
         if (available.includes(BuildingType.Residential)) {
             targetType = BuildingType.Residential;
         }
     }
-    // Priority 3: Economy / Jobs / Food
+    // Priority 4: Economy / Jobs
     else {
         // Weighted random choice based on availability
         const ecoOptions = [];
-        if (available.includes(BuildingType.Agriculture)) ecoOptions.push(BuildingType.Agriculture, BuildingType.Agriculture); // Weight higher
+        if (available.includes(BuildingType.Agriculture)) ecoOptions.push(BuildingType.Agriculture); 
         if (available.includes(BuildingType.Commercial)) ecoOptions.push(BuildingType.Commercial);
         if (available.includes(BuildingType.Industrial)) ecoOptions.push(BuildingType.Industrial);
         if (available.includes(BuildingType.Park)) ecoOptions.push(BuildingType.Park);
         if (available.includes(BuildingType.ResearchLab) && currentStats.money > 2000) ecoOptions.push(BuildingType.ResearchLab);
+        if (available.includes(BuildingType.GreenRoad) && Math.random() > 0.7) ecoOptions.push(BuildingType.GreenRoad);
 
         if (ecoOptions.length > 0) {
              targetType = ecoOptions[Math.floor(Math.random() * ecoOptions.length)];
@@ -199,28 +212,35 @@ function App() {
     const config = BUILDINGS[targetType];
     if (currentStats.money < config.cost) return;
 
-    // 2. Find Location (Clustering Logic)
-    // Calculate average position of existing buildings
-    let sumX = 0, sumY = 0, count = 0;
+    // 2. Find Location (Organic Clustering)
+    // Identify existing hubs to grow from
+    const hubs: TileData[] = [];
     currentGrid.flat().forEach(t => {
+        // We prefer to build near existing structures that aren't just roads (though roads are okay too)
         if (t.buildingType !== BuildingType.None) {
-            sumX += t.x;
-            sumY += t.y;
-            count++;
+            hubs.push(t);
         }
     });
 
-    const centerX = count > 0 ? sumX / count : mapSize / 2;
-    const centerY = count > 0 ? sumY / count : mapSize / 2;
+    let startX = mapSize / 2;
+    let startY = mapSize / 2;
 
-    // Try multiple spots near center, spiraling out slightly random
-    for (let attempt = 0; attempt < 15; attempt++) {
-        // Biased random point near center
+    // If we have buildings, pick a random one to expand near
+    if (hubs.length > 0) {
+        const randomHub = hubs[Math.floor(Math.random() * hubs.length)];
+        startX = randomHub.x;
+        startY = randomHub.y;
+    }
+
+    // Try multiple spots spiraling/randomly near the chosen hub
+    for (let attempt = 0; attempt < 20; attempt++) {
+        // Biased random point near the hub (closer is more likely)
         const angle = Math.random() * Math.PI * 2;
-        const radius = Math.random() * (mapSize * 0.4) + (attempt * 0.5); // Increase radius with attempts
+        // Range 1 to 5 tiles away
+        const dist = 1 + Math.random() * 4 + (attempt * 0.2); 
         
-        const x = Math.floor(centerX + Math.cos(angle) * radius);
-        const y = Math.floor(centerY + Math.sin(angle) * radius);
+        const x = Math.floor(startX + Math.cos(angle) * dist);
+        const y = Math.floor(startY + Math.sin(angle) * dist);
 
         if (x < 0 || y < 0 || x >= mapSize || y >= mapSize) continue;
         if (x + config.width > mapSize || y + config.height > mapSize) continue;
@@ -255,8 +275,7 @@ function App() {
         
         setGrid(newGrid);
         setStats(prev => ({ ...prev, money: prev.money - config.cost }));
-        // addNewsItem({id: Date.now().toString(), text: `Auto-Gov: Constructed ${config.name}.`, type: 'neutral'}); // Optional spam reduction
-        break; // Stop after successful build
+        break; 
     }
   }, [mapSize]);
 
@@ -270,6 +289,10 @@ function App() {
       let dailyScience = 0;
       let powerGen = 0;
       let powerDrain = 0;
+      let bioFoodGen = 0;
+      let bioO2Gen = 0;
+      let bioCO2Gen = 0;
+
       let buildingCounts: Record<string, number> = {};
 
       const processedRoots = new Set<string>();
@@ -285,6 +308,11 @@ function App() {
             // Power Calculation
             if (config.powerGen > 0) powerGen += config.powerGen;
             else powerDrain += Math.abs(config.powerGen);
+
+            // Bio Stats
+            bioFoodGen += config.foodGen;
+            bioO2Gen += config.oxygenGen;
+            bioCO2Gen += config.co2Gen;
 
             // Base stats (will adjust for low power later)
             dailyIncome += config.incomeGen;
@@ -304,6 +332,8 @@ function App() {
           dailyIncome = Math.floor(dailyIncome * powerRatio);
           dailyPopGrowth = 0; // No growth without full power
           dailyScience = Math.floor(dailyScience * powerRatio);
+          bioFoodGen = Math.floor(bioFoodGen * powerRatio); // Farms fail without power
+          bioO2Gen = bioO2Gen * powerRatio; // Algae dies without light/pumps
       }
 
       const resCount = buildingCounts[BuildingType.Residential] || 0;
@@ -313,9 +343,68 @@ function App() {
       if (autoGrowthRef.current) attemptAutoBuild();
 
       setStats(prev => {
-        let newPop = prev.population + dailyPopGrowth;
+        // --- Atmosphere & Food Simulation ---
+        const pop = prev.population;
+        
+        // 1. Food Consumption
+        const foodNeeded = pop * POP_FOOD_CONSUMPTION;
+        let newFood = prev.food + bioFoodGen - foodNeeded;
+        let starvation = 0;
+        
+        if (newFood < 0) {
+            // Starvation mechanic
+            starvation = Math.abs(newFood); // People who couldn't eat
+            newFood = 0;
+        }
+
+        // 2. Oxygen & CO2
+        const o2Consumed = pop * POP_O2_CONSUMPTION;
+        const co2Produced = pop * POP_CO2_PRODUCTION;
+
+        let newO2 = prev.oxygen + bioO2Gen - o2Consumed;
+        let newCO2 = prev.co2 + co2Produced + bioCO2Gen;
+
+        // Natural baseline drift if empty (lunar regolith doesn't breathe)
+        if (pop === 0 && processedRoots.size === 0) {
+            newO2 = 100;
+            newCO2 = 400;
+        }
+
+        // Clamping
+        if (newO2 > 100) newO2 = 100;
+        if (newO2 < 0) newO2 = 0;
+        if (newCO2 < 300) newCO2 = 300; // Minimum baseline
+
+        // Survival Check
+        let deathToll = 0;
+        
+        // Starvation Deaths
+        if (starvation > 0) deathToll += Math.floor(starvation * 0.1); // 10% of starving people die per tick
+        
+        // Suffocation Deaths
+        if (newO2 < 10) deathToll += Math.floor(pop * 0.05);
+        else if (newO2 < 5) deathToll += Math.floor(pop * 0.2);
+
+        // CO2 Toxicity
+        if (newCO2 > 2000) deathToll += Math.floor(pop * 0.02);
+
+        let newPop = pop + dailyPopGrowth - deathToll;
         if (newPop > maxPop) newPop = maxPop; 
-        if (resCount === 0 && prev.population > 0) newPop = Math.max(0, prev.population - 5);
+        if (newPop < 0) newPop = 0;
+
+        // Alerts
+        if (deathToll > 0 && Math.random() < 0.2) {
+            addNewsItem({id: Date.now().toString(), text: "CRITICAL: Life support failure causing casualties.", type: 'negative'});
+        }
+        if (newCO2 > 1500 && Math.random() < 0.1) {
+             addNewsItem({id: Date.now().toString(), text: "WARNING: High CO2 levels detected.", type: 'negative'});
+        }
+        if (newO2 < 20 && Math.random() < 0.1) {
+             addNewsItem({id: Date.now().toString(), text: "WARNING: Low Oxygen levels.", type: 'negative'});
+        }
+        if (starvation > 0 && Math.random() < 0.1) {
+             addNewsItem({id: Date.now().toString(), text: "WARNING: Food stocks depleted.", type: 'negative'});
+        }
 
         const newStats = {
           money: prev.money + dailyIncome,
@@ -323,8 +412,30 @@ function App() {
           day: prev.day + 1,
           science: prev.science + dailyScience,
           powerSupply: powerGen,
-          powerDemand: powerDrain
+          powerDemand: powerDrain,
+          oxygen: newO2,
+          co2: newCO2,
+          food: newFood
         };
+
+        // --- Update History Buffer ---
+        setHistory(prevHist => {
+            const newEntry: HistoryEntry = {
+                day: newStats.day,
+                population: newStats.population,
+                money: newStats.money,
+                science: newStats.science,
+                powerSupply: newStats.powerSupply,
+                powerDemand: newStats.powerDemand,
+                oxygen: newStats.oxygen,
+                co2: newStats.co2,
+                food: newStats.food
+            };
+            // Keep last 60 ticks (approx 2 minutes of real time at 2s/tick, or just a nice trail)
+            const newHist = [...prevHist, newEntry];
+            if (newHist.length > 60) newHist.shift();
+            return newHist;
+        });
         
         // Check Goal
         const goal = goalRef.current;
@@ -361,7 +472,7 @@ function App() {
   // --- Interaction Logic ---
 
   const handleTileClick = useCallback((x: number, y: number) => {
-    if (!gameStarted) return; 
+    if (!gameStarted || viewMode === 'moon') return; 
 
     const currentGrid = gridRef.current;
     const currentStats = statsRef.current;
@@ -421,8 +532,16 @@ function App() {
 
     for(let i = 0; i < buildingConfig.width; i++) {
       for(let j = 0; j < buildingConfig.height; j++) {
-        if (currentGrid[y+j][x+i].buildingType !== BuildingType.None) occupied = true;
-        if (currentGrid[y+j][x+i].height !== baseHeight) occupied = true; // Terrain height check
+        const t = currentGrid[y+j][x+i];
+        
+        // Special case: Upgrading Road to GreenRoad
+        if (tool === BuildingType.GreenRoad && t.buildingType === BuildingType.Road) {
+             // Allow placement (it counts as unoccupied for this specific upgrade)
+        } else {
+            if (t.buildingType !== BuildingType.None) occupied = true;
+        }
+        
+        if (t.height !== baseHeight) occupied = true; 
       }
     }
 
@@ -452,7 +571,7 @@ function App() {
     } else {
       addNewsItem({id: Date.now().toString(), text: `Insufficient credits for ${buildingConfig.name}.`, type: 'negative'});
     }
-  }, [selectedTool, addNewsItem, gameStarted, mapSize, unlockedBuildings]);
+  }, [selectedTool, addNewsItem, gameStarted, mapSize, unlockedBuildings, viewMode]);
 
   const handleClaimReward = () => {
     if (currentGoal && currentGoal.completed) {
@@ -478,6 +597,7 @@ function App() {
         hoveredTool={selectedTool}
         population={stats.population}
         mapSize={mapSize}
+        viewMode={viewMode}
       />
       
       {!gameStarted && (
@@ -487,6 +607,7 @@ function App() {
       {gameStarted && (
         <UIOverlay
           stats={stats}
+          history={history}
           selectedTool={selectedTool}
           onSelectTool={setSelectedTool}
           currentGoal={currentGoal}
@@ -499,6 +620,8 @@ function App() {
           unlockedTechs={unlockedTechs}
           onUnlockTech={handleUnlockTech}
           unlockedBuildings={unlockedBuildings}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
         />
       )}
     </div>
